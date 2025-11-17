@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+
+# Environment variables (secrets!)
+.env
+.env.local
+*.env
+
+# API Keys and Credentials
+config/service-account-key.json
+*-key.json
+
+# Build outputs
+.next/
+dist/
+build/
+
+# OS files
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
