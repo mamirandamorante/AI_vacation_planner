@@ -40,6 +40,7 @@ from agents.hotel_agent import HotelAgent
 from agents.restaurant_agent import RestaurantAgent
 from agents.attractions_agent import AttractionsAgent
 from agents.orchestrator_agent import OrchestratorAgent
+from agents.itinerary_agent import ItineraryAgent
 
 
 # STEP 3: Load environment variables from backend/.env
@@ -73,7 +74,8 @@ flight_agent = FlightAgent(GEMINI_API_KEY)
 hotel_agent = HotelAgent(GEMINI_API_KEY)
 restaurant_agent = RestaurantAgent(GEMINI_API_KEY, PLACES_API_KEY)
 attractions_agent = AttractionsAgent(GEMINI_API_KEY, PLACES_API_KEY)
-orchestrator_agent = OrchestratorAgent(GEMINI_API_KEY, flight_agent, hotel_agent, restaurant_agent, attractions_agent)
+itinerary_agent = ItineraryAgent(GEMINI_API_KEY)
+orchestrator_agent = OrchestratorAgent(GEMINI_API_KEY, flight_agent, hotel_agent, restaurant_agent, attractions_agent, itinerary_agent)
 print("✅ Agent API Server initialized successfully")
 
 
@@ -102,7 +104,7 @@ def health_check():
     return jsonify({
         "status": "ok",
         "service": "Agent API Server",
-        "agents": ["FlightAgent","HotelAgent","RestaurantAgent","AttractionsAgent","OrchestratorAgent"]  # List all available agents
+        "agents": ["FlightAgent","HotelAgent","RestaurantAgent","AttractionsAgent","ItineraryAgent","OrchestratorAgent"]  # List all available agents
     })
 @app.route('/api/agents/hotel/search', methods=['POST'])
 def search_hotels():
@@ -256,19 +258,9 @@ def search_flights():
 # ============================================================================
 
 if __name__ == '__main__':
-    """
-    Main entry point - runs when you execute: python main.py
+    # Get port from environment variable or use 8081 as default
+    port = int(os.environ.get('AGENT_PORT', 8081))
     
-    What happens:
-    1. Get port from environment (default 8081)
-    2. Print startup information
-    3. Start Flask server
-    """
-    
-    # Get port from .env or use default
-    port = int(os.getenv('AGENT_PORT', 8081))
-    
-    # Print startup information (helpful for developers)
     print("\n" + "="*60)
     print("🚀 Agent API Server Starting")
     print("="*60)
@@ -277,11 +269,5 @@ if __name__ == '__main__':
     print(f"✈️  Flight search: POST http://localhost:{port}/api/agents/flight/search")
     print("="*60 + "\n")
     
-    # Start the Flask development server
-    # host='0.0.0.0' means listen on all network interfaces
-    # debug=True enables auto-reload and better error messages
-    if __name__ == '__main__':
-        import os
-        port = int(os.environ.get('PORT', 8081))
-        print(f"Starting Flask app on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=False)
+    # Start Flask server
+    app.run(host='0.0.0.0', port=port, debug=False)

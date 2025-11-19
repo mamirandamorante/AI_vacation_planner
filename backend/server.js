@@ -290,6 +290,45 @@ function formatCompleteVacationPlan(results, travelDetails) {
   }
   
   plan += `---\n\n`;
+  
+  // ITINERARY
+  plan += `## 📅 Day-by-Day Itinerary\n\n`;
+  const itineraryData = results.itinerary;
+  if (itineraryData?.success && itineraryData.itinerary?.length > 0) {
+    itineraryData.itinerary.forEach((day) => {
+      plan += `### Day ${day.day} - ${day.date}\n\n`;
+      
+      if (day.morning?.activity) {
+        plan += `**Morning:** ${day.morning.activity}\n`;
+        if (day.morning.location) plan += `📍 ${day.morning.location}\n`;
+        plan += `\n`;
+      }
+      
+      if (day.lunch?.restaurant) {
+        plan += `**Lunch:** ${day.lunch.restaurant}\n`;
+        if (day.lunch.cuisine) plan += `🍽️ ${day.lunch.cuisine}\n`;
+        plan += `\n`;
+      }
+      
+      if (day.afternoon?.activity) {
+        plan += `**Afternoon:** ${day.afternoon.activity}\n`;
+        if (day.afternoon.location) plan += `📍 ${day.afternoon.location}\n`;
+        plan += `\n`;
+      }
+      
+      if (day.dinner?.restaurant) {
+        plan += `**Dinner:** ${day.dinner.restaurant}\n`;
+        if (day.dinner.cuisine) plan += `🍽️ ${day.dinner.cuisine}\n`;
+        plan += `\n`;
+      }
+      
+      plan += `\n`;
+    });
+  } else {
+    plan += `Itinerary will be generated based on your preferences.\n\n`;
+  }
+  
+  plan += `---\n\n`;
   plan += `*Complete vacation plan powered by AI Multi-Agent System*`;
   
   return plan;

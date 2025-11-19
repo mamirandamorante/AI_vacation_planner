@@ -4,4 +4,4 @@ node_modules
 .gitignore
 *.md
 .env.local
-npm-debug.log
+npm-debug.logd

@@ -8,12 +8,13 @@ class OrchestratorAgent(BaseAgent):
     Master agent that coordinates all specialized agents
     """
     
-    def __init__(self, gemini_api_key: str, flight_agent, hotel_agent, restaurant_agent, attractions_agent):
+    def __init__(self, gemini_api_key: str, flight_agent, hotel_agent, restaurant_agent, attractions_agent, itinerary_agent):
         super().__init__("OrchestratorAgent", gemini_api_key)
         self.flight_agent = flight_agent
         self.hotel_agent = hotel_agent
         self.restaurant_agent = restaurant_agent
         self.attractions_agent = attractions_agent
+        self.itinerary_agent = itinerary_agent
     
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -70,7 +71,18 @@ class OrchestratorAgent(BaseAgent):
                 'min_rating': 4.0
             })
             
-            # 5. Generate comprehensive summary
+            # 5. Generate Itinerary
+            self.log("Calling ItineraryAgent...")
+            results['itinerary'] = self.itinerary_agent.execute({
+                'flights': results['flights'].get('flights', []),
+                'hotels': results['hotels'].get('hotels', []),
+                'restaurants': results['restaurants'].get('restaurants', []),
+                'attractions': results['attractions'].get('attractions', []),
+                'departure_date': departure_date,
+                'return_date': return_date
+            })
+
+            # 6. Generate comprehensive summary
             summary = self._generate_comprehensive_summary(results, input_data)
             
             return {
