@@ -18,7 +18,7 @@ app.use(express.json());
 let model = null;
 if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your-gemini-api-key') {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // More stable than 2.5
   console.log('✅ Gemini AI initialized');
 } else {
   console.log('⚠️  Gemini API key not set - using mock responses');
@@ -28,22 +28,70 @@ if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your-gemini-ap
 // HELPER FUNCTIONS
 // =============================================================================
 
+// Simple fallback parser when Gemini is unavailable
+function simpleFallbackParser(prompt) {
+  console.log('🔧 Using simple fallback parser...');
+  
+  const lower = prompt.toLowerCase();
+  
+  // Extract origin
+  let origin = 'JFK';
+  if (lower.includes('from new york') || lower.includes('from nyc')) origin = 'JFK';
+  else if (lower.includes('from los angeles') || lower.includes('from la')) origin = 'LAX';
+  else if (lower.includes('from san francisco')) origin = 'SFO';
+  else if (lower.includes('from boston')) origin = 'BOS';
+  
+  // Extract destination
+  let destination = null;
+  if (lower.includes('to madrid') || lower.includes('madrid')) destination = 'MAD';
+  else if (lower.includes('to barcelona') || lower.includes('barcelona')) destination = 'BCN';
+  else if (lower.includes('to paris') || lower.includes('paris')) destination = 'CDG';
+  else if (lower.includes('to london') || lower.includes('london')) destination = 'LHR';
+  else if (lower.includes('to los angeles') || lower.includes('to la')) destination = 'LAX';
+  
+  // Extract dates
+  let departure_date = '2025-12-01';
+  if (lower.includes('december')) departure_date = '2025-12-01';
+  else if (lower.includes('january')) departure_date = '2026-01-15';
+  
+  // Extract duration
+  let days = 7;
+  const daysMatch = prompt.match(/(\d+)\s*days?/i);
+  if (daysMatch) days = parseInt(daysMatch[1]);
+  
+  const departDate = new Date(departure_date);
+  departDate.setDate(departDate.getDate() + days);
+  const return_date = departDate.toISOString().split('T')[0];
+  
+  if (!destination) {
+    return {
+      success: false,
+      needs_clarification: true,
+      missing_fields: ['destination'],
+      parsed_data: {}
+    };
+  }
+  
+  return {
+    success: true,
+    has_sufficient_info: true,
+    origin,
+    destination,
+    departure_date,
+    return_date,
+    passengers: 2,
+    budget: null,
+    preferences: {}
+  };
+}
+
 // Function to parse natural language prompt using Gemini
 async function parseVacationPrompt(prompt) {
   console.log('🧠 Parsing prompt with Gemini AI...');
   
   if (!model) {
-    console.log('⚠️  Gemini not available, using defaults');
-    return {
-      success: true,
-      origin: 'JFK',
-      destination: 'LAX',
-      departure_date: '2025-12-01',
-      return_date: '2025-12-08',
-      passengers: 2,
-      budget: 2000,
-      preferences: {}
-    };
+    console.log('⚠️  Gemini not available, using fallback');
+    return simpleFallbackParser(prompt);
   }
   
   const parsePrompt = `You are a travel planning assistant. Extract structured information from the user's travel request.
@@ -53,67 +101,90 @@ User request: "${prompt}"
 Extract the following information and respond ONLY with a JSON object (no markdown, no explanation):
 
 {
-  "has_sufficient_info": true/false (false if critical info like origin or destination is missing),
-  "missing_fields": ["origin", "destination", "dates"] (only if has_sufficient_info is false),
-  "origin": "airport code or city (e.g., JFK, NYC, London) or null if not mentioned",
-  "destination": "airport code or city (e.g., LAX, Paris, Tokyo) or null if not mentioned",
-  "departure_date": "YYYY-MM-DD format or null if not mentioned",
-  "return_date": "YYYY-MM-DD format or null for one-way or not mentioned",
-  "passengers": number (default 2 if not mentioned),
-  "budget": number in USD or null if not mentioned,
+  "has_sufficient_info": true/false,
+  "missing_fields": [],
+  "origin": "airport code or null",
+  "destination": "airport code or null",
+  "departure_date": "YYYY-MM-DD or null",
+  "return_date": "YYYY-MM-DD or null",
+  "passengers": number,
+  "budget": number or null,
   "preferences": {
-    "hotel_rating": number 1-5 or null,
+    "hotel_rating": number or null,
     "flight_class": "economy/business/first" or null,
     "max_stops": number or null
   }
 }
 
-Rules:
-- Set has_sufficient_info to FALSE if origin OR destination is missing/unclear
-- Use null for any field that wasn't mentioned
-- Use IATA codes when possible (NYC->JFK, LA->LAX, Madrid->MAD, etc.)
-- If dates not mentioned, set to null
-- Always return valid JSON
+EXTRACTION RULES:
+- "New York", "NYC", "from New York" → origin: "JFK"
+- "Madrid", "to Madrid" → destination: "MAD"
+- "Los Angeles", "LA" → "LAX"
+- "Barcelona" → "BCN"
+- "Paris" → "CDG"
+- "London" → "LHR"
+- "December" with no specific date → use December 1st of current year
+- "5 days" means trip duration - calculate return_date as departure + 5 days
+- If origin AND destination are clearly mentioned → has_sufficient_info: true
+- If dates are vague (like "December"), make reasonable assumptions
+- Default passengers: 2 if not mentioned
 
-Respond ONLY with the JSON object, nothing else.`;
+IMPORTANT: 
+- Be lenient - if you can identify origin and destination, set has_sufficient_info: true
+- Make reasonable date assumptions rather than marking as missing
+- Only set has_sufficient_info: false if origin OR destination is truly unclear
+
+Current date: ${new Date().toISOString().split('T')[0]}
+
+Respond ONLY with valid JSON, no markdown formatting.`;
 
   try {
-    const result = await model.generateContent(parsePrompt);
-    const response = await result.response;
-    let text = response.text();
-    
-    // Clean up the response
-    text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    
-    // Parse JSON
-    const parsed = JSON.parse(text);
-    
-    console.log('✅ Parsed travel details:', parsed);
-    
-    // Check if we have sufficient information
-    if (parsed.has_sufficient_info === false || !parsed.origin || !parsed.destination) {
-      console.log('⚠️  Missing critical information');
-      return {
-        success: false,
-        needs_clarification: true,
-        missing_fields: parsed.missing_fields || [],
-        parsed_data: parsed
-      };
+    // Retry up to 3 times
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`Attempt ${attempt}/3...`);
+        const result = await model.generateContent(parsePrompt);
+        const response = await result.response;
+        let text = response.text();
+        
+        // Clean up the response
+        text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        
+        // Parse JSON
+        const parsed = JSON.parse(text);
+        
+        console.log('✅ Parsed travel details:', parsed);
+        
+        // Check if we have sufficient information
+        if (parsed.has_sufficient_info === false || !parsed.origin || !parsed.destination) {
+          console.log('⚠️  Missing critical information');
+          return {
+            success: false,
+            needs_clarification: true,
+            missing_fields: parsed.missing_fields || [],
+            parsed_data: parsed
+          };
+        }
+        
+        return {
+          success: true,
+          ...parsed
+        };
+        
+      } catch (err) {
+        if (attempt < 3) {
+          console.log(`⚠️  Attempt ${attempt} failed, retrying...`);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+        } else {
+          throw err; // Last attempt failed
+        }
+      }
     }
     
-    return {
-      success: true,
-      ...parsed
-    };
-    
   } catch (error) {
-    console.error('❌ Error parsing prompt:', error);
-    return {
-      success: false,
-      needs_clarification: true,
-      missing_fields: ['origin', 'destination', 'dates'],
-      error: error.message
-    };
+    console.error('❌ All Gemini attempts failed');
+    console.error('Gemini error:', error);
+    return simpleFallbackParser(prompt);
   }
 }
 
@@ -151,84 +222,75 @@ function convertToAirportCode(city) {
   return cityToCode[lower] || city.toUpperCase();
 }
 
-// Helper function to format agent results for display
-function formatVacationPlan(flightData, hotelData, travelDetails) {
-  let plan = `# Your Complete Vacation Plan\n\n`;
+// Format complete vacation plan with all agents' results
+function formatCompleteVacationPlan(results, travelDetails) {
+  let plan = `# 🌍 Your Complete Vacation Plan\n\n`;
   plan += `**Trip:** ${travelDetails.origin} → ${travelDetails.destination}\n`;
-  plan += `**Dates:** ${travelDetails.departure_date}`;
-  if (travelDetails.return_date) {
-    plan += ` to ${travelDetails.return_date}`;
-  }
-  plan += `\n`;
+  plan += `**Dates:** ${travelDetails.departure_date} to ${travelDetails.return_date}\n`;
   plan += `**Travelers:** ${travelDetails.passengers} ${travelDetails.passengers === 1 ? 'person' : 'people'}\n`;
   if (travelDetails.budget) {
     plan += `**Budget:** $${travelDetails.budget}\n`;
   }
-  plan += `\n*Powered by AI Agents using Real-Time Data*\n\n`;
-  plan += `---\n\n`;
+  plan += `\n---\n\n`;
   
-  // FLIGHTS SECTION
+  // FLIGHTS
   plan += `## ✈️ Flights\n\n`;
-  
-  if (flightData && flightData.success && flightData.flights && flightData.flights.length > 0) {
+  const flightData = results.flights;
+  if (flightData?.success && flightData.flights?.length > 0) {
     plan += `${flightData.summary}\n\n`;
-    plan += `### Flight Options:\n\n`;
-    
-    flightData.flights.slice(0, 3).forEach((flight, index) => {
-      plan += `**Option ${index + 1}** - $${flight.price} ${flight.currency}\n`;
-      plan += `- Outbound: ${flight.outbound.airline} ${flight.outbound.flight}\n`;
-      plan += `  ${flight.outbound.from} → ${flight.outbound.to}\n`;
-      plan += `  Departure: ${flight.outbound.departure}\n`;
-      plan += `  Arrival: ${flight.outbound.arrival}\n`;
-      plan += `  Stops: ${flight.outbound.stops}\n`;
-      
-      if (flight.return) {
-        plan += `- Return: ${flight.return.airline} ${flight.return.flight}\n`;
-        plan += `  ${flight.return.from} → ${flight.return.to}\n`;
-        plan += `  Departure: ${flight.return.departure}\n`;
-        plan += `  Arrival: ${flight.return.arrival}\n`;
-        plan += `  Stops: ${flight.return.stops}\n`;
-      }
-      plan += `\n`;
+    flightData.flights.slice(0, 3).forEach((flight, i) => {
+      plan += `**Option ${i + 1}** - $${flight.price} ${flight.currency}\n`;
+      plan += `- ${flight.outbound.airline}: ${flight.outbound.from} → ${flight.outbound.to}\n`;
+      plan += `  Departs: ${flight.outbound.departure} | Stops: ${flight.outbound.stops}\n\n`;
     });
   } else {
-    plan += `No flights found for this route. This might be because:\n`;
-    plan += `- The route is not available in the Amadeus test database\n`;
-    plan += `- The dates are too far in the future\n`;
-    plan += `- There are no direct connections\n\n`;
+    plan += `Flight information unavailable.\n\n`;
   }
   
-  plan += `\n---\n\n`;
-  
-  // HOTELS SECTION
-  plan += `## 🏨 Hotels\n\n`;
-  
-  if (hotelData && hotelData.success && hotelData.hotels && hotelData.hotels.length > 0) {
-    plan += `${hotelData.summary}\n\n`;
-    plan += `### Hotel Recommendations:\n\n`;
-    
-    hotelData.hotels.slice(0, 3).forEach((hotel, index) => {
-      plan += `**${index + 1}. ${hotel.name}**`;
-      if (hotel.rating > 0) {
-        plan += ` - ${'⭐'.repeat(hotel.rating)}`;
-      }
-      plan += `\n`;
-      plan += `- Price: $${hotel.price} ${hotel.currency} per night\n`;
-      plan += `- Room Type: ${hotel.room_type}\n`;
-      plan += `\n`;
-    });
-  } else {
-    plan += `Hotel recommendations will be added soon!\n\n`;
-  }
-  
-  plan += `\n---\n\n`;
-  plan += `## 📋 Next Steps\n\n`;
-  plan += `1. Review the flight and hotel options above\n`;
-  plan += `2. Book your preferred flight\n`;
-  plan += `3. Reserve your hotel\n`;
-  plan += `4. Start planning your activities!\n\n`;
   plan += `---\n\n`;
-  plan += `*Generated by AI Agents powered by Google Gemini and Amadeus Travel APIs*`;
+  
+  // HOTELS
+  plan += `## 🏨 Hotels\n\n`;
+  const hotelData = results.hotels;
+  if (hotelData?.success && hotelData.hotels?.length > 0) {
+    hotelData.hotels.slice(0, 3).forEach((hotel, i) => {
+      plan += `**${i + 1}. ${hotel.name}** ${'⭐'.repeat(hotel.rating)}\n`;
+      plan += `- $${hotel.price}/night | ${hotel.room_type}\n\n`;
+    });
+  } else {
+    plan += `Hotel recommendations unavailable.\n\n`;
+  }
+  
+  plan += `---\n\n`;
+  
+  // RESTAURANTS
+  plan += `## 🍽️ Restaurants\n\n`;
+  const restaurantData = results.restaurants;
+  if (restaurantData?.success && restaurantData.restaurants?.length > 0) {
+    restaurantData.restaurants.slice(0, 5).forEach((rest, i) => {
+      plan += `**${i + 1}. ${rest.name}** ⭐ ${rest.rating}\n`;
+      plan += `- ${rest.cuisine} | ${'$'.repeat(rest.price)}\n\n`;
+    });
+  } else {
+    plan += `Restaurant recommendations unavailable.\n\n`;
+  }
+  
+  plan += `---\n\n`;
+  
+  // ATTRACTIONS
+  plan += `## 🎭 Things to Do\n\n`;
+  const attractionData = results.attractions;
+  if (attractionData?.success && attractionData.attractions?.length > 0) {
+    attractionData.attractions.slice(0, 5).forEach((attr, i) => {
+      plan += `**${i + 1}. ${attr.name}** ⭐ ${attr.rating}\n`;
+      plan += `- ${attr.type} | ${attr.price}\n\n`;
+    });
+  } else {
+    plan += `Attraction recommendations unavailable.\n\n`;
+  }
+  
+  plan += `---\n\n`;
+  plan += `*Complete vacation plan powered by AI Multi-Agent System*`;
   
   return plan;
 }
@@ -287,17 +349,17 @@ app.post('/api/plan-vacation', async (req, res) => {
   }
 });
 
-// NEW ENDPOINT: Plan vacation using Python agents with intelligent parsing
+// NEW ENDPOINT: Plan vacation using Orchestrator Agent
 app.post('/api/plan-vacation-agents', async (req, res) => {
   try {
     const { prompt } = req.body;
     
     console.log('📝 Received vacation planning request:', prompt);
     
-    // STEP 1: Parse the prompt with Gemini to extract travel details
+    // STEP 1: Parse the prompt with Gemini
     const travelDetails = await parseVacationPrompt(prompt);
     
-    // Check if we need more information from the user
+    // Check if we need more information
     if (!travelDetails.success && travelDetails.needs_clarification) {
       console.log('⚠️  Insufficient information, asking user for clarification');
       
@@ -323,11 +385,11 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
       });
     }
     
-    // Convert city names to airport codes if needed
+    // Convert city names to airport codes
     const origin = convertToAirportCode(travelDetails.origin);
     const destination = convertToAirportCode(travelDetails.destination);
     
-    // Set default dates if not provided (2 weeks from now)
+    // Set default dates if not provided
     const today = new Date();
     const twoWeeksFromNow = new Date(today);
     twoWeeksFromNow.setDate(today.getDate() + 14);
@@ -339,11 +401,11 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
     
     console.log(`✈️  Planning trip: ${origin} → ${destination}`);
     console.log(`📅 Dates: ${departure_date} to ${return_date}`);
-    console.log(`👥 Passengers: ${travelDetails.passengers}`);
     
-    // STEP 2: Call Flight Agent with parsed details
-    console.log('✈️  Calling Flight Agent...');
-    const flightResponse = await fetch('http://localhost:8081/api/agents/flight/search', {
+    // STEP 2: Call Orchestrator Agent (it handles everything!)
+    console.log('🧠 Calling Orchestrator Agent...');
+    const pythonApiUrl = process.env.PYTHON_AGENT_API_URL || 'http://localhost:8081';
+    const orchestratorResponse = await fetch(`${pythonApiUrl}/api/agents/orchestrate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -356,52 +418,25 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
         passengers: travelDetails.passengers || 2,
         budget: travelDetails.budget || 2000,
         preferences: {
+          min_rating: travelDetails.preferences?.hotel_rating || 3,
           max_stops: travelDetails.preferences?.max_stops || 2,
-          cabin: travelDetails.preferences?.flight_class || 'economy'
+          flight_class: travelDetails.preferences?.flight_class || 'economy'
         }
       })
     });
     
-    const flightData = await flightResponse.json();
+    const orchestratorData = await orchestratorResponse.json();
     
-    if (!flightData.success) {
-      console.log('⚠️  Flight agent returned error:', flightData.error);
-    } else {
-      console.log(`✅ Flight Agent returned ${flightData.flights.length} flights`);
+    if (!orchestratorData.success) {
+      throw new Error(`Orchestrator error: ${orchestratorData.error}`);
     }
     
-    // STEP 3: Call Hotel Agent with parsed details
-    console.log('🏨 Calling Hotel Agent...');
+    console.log('✅ Orchestrator completed successfully!');
     
-    const hotelResponse = await fetch('http://localhost:8081/api/agents/hotel/search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        city_code: destination,
-        check_in_date: departure_date,
-        check_out_date: return_date,
-        adults: travelDetails.passengers || 2,
-        budget_per_night: travelDetails.budget ? Math.floor(travelDetails.budget / 5) : 300,
-        preferences: {
-          min_rating: travelDetails.preferences?.hotel_rating || 3
-        }
-      })
-    });
-    
-    const hotelData = await hotelResponse.json();
-    
-    if (!hotelData.success) {
-      console.log('⚠️  Hotel agent returned error, continuing without hotels');
-    } else {
-      console.log(`✅ Hotel Agent returned ${hotelData.hotels.length} hotels`);
-    }
-    
-    // STEP 4: Format combined response for frontend
+    // STEP 3: Format the complete vacation plan
     const response = {
       success: true,
-      data: formatVacationPlan(flightData, hotelData, {
+      data: formatCompleteVacationPlan(orchestratorData.results, {
         origin: origin,
         destination: destination,
         departure_date: departure_date,
@@ -409,14 +444,13 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
         passengers: travelDetails.passengers || 2,
         budget: travelDetails.budget
       }),
-      message: 'Vacation plan generated using AI agents',
-      parsed_details: travelDetails
+      message: 'Complete vacation plan generated by Orchestrator Agent'
     };
     
     res.json(response);
     
   } catch (error) {
-    console.error('❌ Error planning vacation with agents:', error);
+    console.error('❌ Error planning vacation:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 

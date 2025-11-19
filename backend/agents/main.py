@@ -37,6 +37,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 # STEP 2: Import our agents
 from agents.flight_agent import FlightAgent
 from agents.hotel_agent import HotelAgent
+from agents.restaurant_agent import RestaurantAgent
+from agents.attractions_agent import AttractionsAgent
+from agents.orchestrator_agent import OrchestratorAgent
+
 
 # STEP 3: Load environment variables from backend/.env
 # Go up one directory (..) to find .env file
@@ -61,9 +65,15 @@ if not GEMINI_API_KEY:
     sys.exit(1)  # Exit if no API key (can't work without it)
 
 # STEP 6: Initialize our agents
+# Load Google Places API key
+PLACES_API_KEY = os.getenv('GOOGLE_PLACES_API_KEY')
+
+# Initialize agents
 flight_agent = FlightAgent(GEMINI_API_KEY)
 hotel_agent = HotelAgent(GEMINI_API_KEY)
-
+restaurant_agent = RestaurantAgent(GEMINI_API_KEY, PLACES_API_KEY)
+attractions_agent = AttractionsAgent(GEMINI_API_KEY, PLACES_API_KEY)
+orchestrator_agent = OrchestratorAgent(GEMINI_API_KEY, flight_agent, hotel_agent, restaurant_agent, attractions_agent)
 print("✅ Agent API Server initialized successfully")
 
 
@@ -92,7 +102,7 @@ def health_check():
     return jsonify({
         "status": "ok",
         "service": "Agent API Server",
-        "agents": ["FlightAgent","HotelAgent"]  # List all available agents
+        "agents": ["FlightAgent","HotelAgent","RestaurantAgent","AttractionsAgent","OrchestratorAgent"]  # List all available agents
     })
 @app.route('/api/agents/hotel/search', methods=['POST'])
 def search_hotels():
@@ -125,6 +135,58 @@ def search_hotels():
             "success": False,
             "error": str(e),
             "agent": "HotelAgent"
+        }), 500
+@app.route('/api/agents/restaurant/search', methods=['POST'])
+def search_restaurants():
+    """
+    Restaurant Search Endpoint
+    """
+    try:
+        data = request.json
+        print(f"[API] Received restaurant search: {data.get('city')}")
+        
+        result = restaurant_agent.execute(data)
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"[API] Error: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "agent": "RestaurantAgent"
+        }), 500
+@app.route('/api/agents/attractions/search', methods=['POST'])
+def search_attractions():
+    try:
+        data = request.json
+        print(f"[API] Received attractions search: {data.get('city')}")
+        result = attractions_agent.execute(data)
+        return jsonify(result)
+    except Exception as e:
+        print(f"[API] Error: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "agent": "AttractionsAgent"
+        }), 500        
+@app.route('/api/agents/orchestrate', methods=['POST'])
+def orchestrate_vacation():
+    """
+    Orchestrator Endpoint - Coordinates all agents
+    """
+    try:
+        data = request.json
+        print(f"[API] Orchestrating vacation plan: {data.get('origin')} → {data.get('destination')}")
+        
+        result = orchestrator_agent.execute(data)
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"[API] Orchestration error: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "agent": "OrchestratorAgent"
         }), 500
 @app.route('/api/agents/flight/search', methods=['POST'])
 def search_flights():
@@ -218,8 +280,8 @@ if __name__ == '__main__':
     # Start the Flask development server
     # host='0.0.0.0' means listen on all network interfaces
     # debug=True enables auto-reload and better error messages
-    app.run(
-        host='0.0.0.0',  # Listen on all network interfaces
-        port=port,        # Port from .env (8081)
-        debug=True        # Development mode with auto-reload
-    )
+    if __name__ == '__main__':
+        import os
+        port = int(os.environ.get('PORT', 8081))
+        print(f"Starting Flask app on port {port}")
+        app.run(host='0.0.0.0', port=port, debug=False)

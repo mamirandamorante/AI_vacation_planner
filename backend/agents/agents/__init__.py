@@ -19,17 +19,21 @@ With this file:
 from .base_agent import BaseAgent
 from .flight_agent import FlightAgent
 from .hotel_agent import HotelAgent
+from .restaurant_agent import RestaurantAgent
+from .attractions_agent import AttractionsAgent
+from .orchestrator_agent import OrchestratorAgent
 
 # Define what gets exported when someone does "from agents import *"
 # This is like saying "these are the public APIs of this package"
 __all__ = [
     'BaseAgent',
     'FlightAgent',
-    'HotelAgent'
+    'HotelAgent',
+    'RestaurantAgent',
+    'AttractionsAgent',
+    'OrchestratorAgent'
 ]
 
 # As we add more agents, we'll add them here:
-# from .hotel_agent import HotelAgent
 # from .restaurant_agent import RestaurantAgent
-# __all__.append('HotelAgent')
 # __all__.append('RestaurantAgent')

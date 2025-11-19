@@ -19,7 +19,8 @@ export default function Home() {
     setResult('');
   
     try {
-      const response = await fetch('http://localhost:8080/api/plan-vacation-agents', {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080';
+      const response = await fetch(`${backendUrl}/api/plan-vacation-agents`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -48,7 +49,7 @@ export default function Home() {
       setLoading(false);
     }
   };
-
+ 
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
       <div className="max-w-4xl mx-auto">

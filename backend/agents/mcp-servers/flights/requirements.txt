@@ -1,0 +1,4 @@
+# MCP Flight Server Dependencies
+mcp>=1.0.0
+amadeus>=8.0.0
+python-dotenv>=1.0.0
