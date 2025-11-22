@@ -177,11 +177,23 @@ def orchestrate_vacation():
     Orchestrator Endpoint - Coordinates all agents
     """
     try:
+        # 1. Get the JSON data from the request body
         data = request.json
-        print(f"[API] Orchestrating vacation plan: {data.get('origin')} → {data.get('destination')}")
         
-        result = orchestrator_agent.execute(data)
-        return jsonify(result)
+        # --- CRITICAL FIX: Extract the 'user_prompt' string ---
+        user_prompt = data.get('user_prompt') 
+        # ------------------------------------------------------
+
+        if not user_prompt:
+            return jsonify({"success": False, "error": "Missing 'user_prompt' key in request body."}), 400
+
+        # Optional: Update the logging to reflect the prompt
+        print(f"[API] Orchestrating vacation plan for prompt: {user_prompt[:50]}...")
+        
+        # 2. Pass the extracted STRING (not the dict) to the agent
+        result = orchestrator_agent.execute(user_prompt)
+        
+        return jsonify(result), 200 # Return with 200 status code
         
     except Exception as e:
         print(f"[API] Orchestration error: {str(e)}")
