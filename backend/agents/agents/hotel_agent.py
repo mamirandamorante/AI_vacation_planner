@@ -2,6 +2,7 @@ import json
 from typing import Dict, Any, List, Optional, Union
 import google.generativeai as genai
 from google.generativeai import types as genai_types 
+from google.ai import generativelanguage as glm
 from pydantic import BaseModel, Field, ValidationError
 
 # --- HIL Status Codes (Match Orchestrator) ---
@@ -141,12 +142,20 @@ class HotelAgent(BaseAgent):
         response = chat.send_message(prompt)
 
         for i in range(max_turns):
-            if not response.function_calls:
-                self.log(f"❗ Turn {i+1}: LLM stopped without calling a tool. Text: {response.text}", "WARN")
-                break 
+            # Extract function calls properly for SDK 0.8.5
+            current_function_calls = []
+            if response.candidates and response.candidates[0].content:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        current_function_calls.append(part.function_call)
+            
+            if not current_function_calls:
+                self.log(f"❗ Turn {i+1}: LLM stopped without calling a tool. Text: {getattr(response, 'text', 'No text')}", "WARN")
+                break
 
-            tool_results = []
-            for func_call in response.function_calls:
+            tool_results = []  # Initialize tool_results at the start of each iteration
+            
+            for func_call in current_function_calls:
                 tool_name = func_call.name
                 tool_args = self._convert_proto_to_dict(func_call.args)
                 
@@ -155,7 +164,7 @@ class HotelAgent(BaseAgent):
                     tool_results.append(self._create_tool_response(func_call, result))
                     
                     if tool_name == 'ProvideRecommendation':
-                        self.log("⏸️ HotelAgent is ready for Human-in-the-Loop input.")
+                        self.log("⏸️ FlightAgent is ready for Human-in-the-Loop input.")
                         return self._format_recommendation_for_pause()
                         
                 except Exception as e:
@@ -163,7 +172,12 @@ class HotelAgent(BaseAgent):
                     error_result = {"success": False, "error": f"Tool error: {str(e)}"}
                     tool_results.append(self._create_tool_response(func_call, error_result))
             
-            response = chat.send_message(tool_results)
+            # Send tool results back wrapped in glm.Content for SDK 0.8.5
+            tool_response_content = glm.Content(
+                role="function",
+                parts=tool_results
+            )
+            response = chat.send_message(tool_response_content)
             
         return self._force_completion()
 
@@ -361,16 +375,17 @@ CRITICAL RULES:
             "recommended_hotels": top_hotels[:3]
         }
         
-    def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "role": "function",
-            "parts": [{
-                "function_response": {
-                    "name": function_call.name,
-                    "response": result
-                }
-            }]
-        }
+    def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
+        """
+        Creates a properly formatted function response for SDK 0.8.5.
+        Uses the raw protobuf glm.Part structure.
+        """
+        return glm.Part(
+            function_response=glm.FunctionResponse(
+                name=function_call.name,
+                response={'result': result}
+            )
+        )
         
     def _generate_mock_hotels(self, params: SearchHotels) -> List[Dict]:
         return [

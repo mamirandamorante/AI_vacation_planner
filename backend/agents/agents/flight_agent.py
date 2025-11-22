@@ -3,6 +3,7 @@ from typing import Dict, Any, List, Optional, Union, Tuple
 # Consolidated and Corrected Imports
 import google.generativeai as genai
 from google.generativeai import types as genai_types 
+from google.ai import generativelanguage as glm
 from pydantic import BaseModel, Field, ValidationError
 
 # Assuming BaseAgent is defined elsewhere
@@ -138,12 +139,20 @@ class FlightAgent(BaseAgent):
         response = chat.send_message(prompt)
 
         for i in range(max_turns):
-            if not response.function_calls:
-                self.log(f"❗ Turn {i+1}: LLM stopped without calling a tool. Text: {response.text}", "WARN")
-                break 
+            # Extract function calls properly for SDK 0.8.5
+            current_function_calls = []
+            if response.candidates and response.candidates[0].content:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        current_function_calls.append(part.function_call)
+            
+            if not current_function_calls:
+                self.log(f"❗ Turn {i+1}: LLM stopped without calling a tool. Text: {getattr(response, 'text', 'No text')}", "WARN")
+                break
 
-            tool_results = []
-            for func_call in response.function_calls:
+            tool_results = []  # Initialize tool_results at the start of each iteration
+            
+            for func_call in current_function_calls:
                 tool_name = func_call.name
                 tool_args = self._convert_proto_to_dict(func_call.args)
                 
@@ -152,7 +161,6 @@ class FlightAgent(BaseAgent):
                     tool_results.append(self._create_tool_response(func_call, result))
                     
                     if tool_name == 'ProvideRecommendation':
-                        # HIL PAUSE POINT: Signal Orchestrator to pause and ask the user
                         self.log("⏸️ FlightAgent is ready for Human-in-the-Loop input.")
                         return self._format_recommendation_for_pause()
                         
@@ -161,8 +169,12 @@ class FlightAgent(BaseAgent):
                     error_result = {"success": False, "error": f"Tool error: {str(e)}"}
                     tool_results.append(self._create_tool_response(func_call, error_result))
             
-            # Send tool results back to the LLM to continue the loop
-            response = chat.send_message(tool_results)
+            # Send tool results back wrapped in glm.Content for SDK 0.8.5
+            tool_response_content = glm.Content(
+                role="function",
+                parts=tool_results
+            )
+            response = chat.send_message(tool_response_content)
             
         # If the loop finishes without a recommendation or choice
         return self._force_completion()
@@ -385,17 +397,17 @@ CRITICAL RULES:
             "recommended_flights": top_flights[:3]
         }
         
-    def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Formats tool output for feeding back to the LLM."""
-        return {
-            "role": "function",
-            "parts": [{
-                "function_response": {
-                    "name": function_call.name,
-                    "response": result
-                }
-            }]
-        }
+    def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
+        """
+        Creates a properly formatted function response for SDK 0.8.5.
+        Uses the raw protobuf glm.Part structure.
+        """
+        return glm.Part(
+            function_response=glm.FunctionResponse(
+                name=function_call.name,
+                response={'result': result}
+            )
+        )
         
     def _parse_duration_minutes(self, duration_str: str) -> int:
         """Converts 'Xh Ym' string duration to total minutes (used for sorting)."""

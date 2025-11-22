@@ -3,6 +3,7 @@ import json
 import google.generativeai as genai
 # This is the correct, modern import structure for a stable SDK
 from google.generativeai import types as genai_types
+from google.ai import generativelanguage as glm
 from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
@@ -61,19 +62,19 @@ class OrchestratorAgent(BaseAgent):
         self.itinerary_agent = itinerary_agent
         
         self.specialist_tools = {
-            "search_flights": self._tool_flight_search, 
-            "search_hotels": self._tool_hotel_search,
-            "search_restaurants": restaurant_agent.execute, 
-            "search_attractions": attractions_agent.execute,
-            "generate_itinerary": itinerary_agent.execute,
+            "FlightSearch": self._tool_flight_search,  # Changed from search_flights
+            "HotelSearch": self._tool_hotel_search,     # Changed from search_hotels
+            "RestaurantSearch": restaurant_agent.execute, 
+            "AttractionsSearch": attractions_agent.execute,
+            "GenerateItinerary": itinerary_agent.execute,
         }
-
+        
         self.tool_schemas = {
-            "search_flights": FlightSearch,
-            "search_hotels": HotelSearch,
-            "search_restaurants": RestaurantSearch,
-            "search_attractions": AttractionsSearch,
-            "generate_itinerary": GenerateItinerary
+            "FlightSearch": FlightSearch,      # Match the tool name
+            "HotelSearch": HotelSearch,        # Match the tool name
+            "RestaurantSearch": RestaurantSearch,
+            "AttractionsSearch": AttractionsSearch,
+            "GenerateItinerary": GenerateItinerary
         }
 
         self.all_results = {}
@@ -306,13 +307,15 @@ RULES:
         self.log(f"✅ Created {len(tools)} explicit Tool objects for Orchestrator LLM.")
         return tools
     
-    def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any: 
-    
-        # Construct the function response using the correct v0.8.5 structure
-        return genai_types.Part(
-            function_response=genai_types.FunctionResponse(
+    def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
+        """
+        Creates a properly formatted function response for SDK 0.8.5.
+        Uses the raw protobuf glm.Part structure.
+        """
+        return glm.Part(
+            function_response=glm.FunctionResponse(
                 name=function_call.name,
-                response=result
+                response={'result': result}
             )
         )
         
@@ -365,7 +368,7 @@ RULES:
                     tool_parts.append(self._create_tool_response(func_call, error_result))
             
             # FIX: Use the alias genai_types.Content
-            tool_response_content = genai_types.Content(
+            tool_response_content = glm.Content(
                 role="function",
                 parts=tool_parts
             )
