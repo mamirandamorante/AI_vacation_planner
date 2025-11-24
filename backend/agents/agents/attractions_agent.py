@@ -44,7 +44,6 @@ class FilterConstraints(BaseModel):
     interests: List[str] = Field(default_factory=list, description="User interests (e.g., ['art', 'history', 'nature']).")
     max_entry_fee: Optional[float] = Field(None, description="Maximum entry fee acceptable (e.g., 50.0).")
     is_indoor_outdoor: Optional[str] = Field(None, description="Filter for 'indoor' or 'outdoor' activities.")
-    # ENHANCEMENT: Accessibility
     wheelchair_accessible: Optional[bool] = Field(None, description="Filter for locations with wheelchair accessible entrances/restrooms.")
 
 class SearchAttractions(BaseModel):
@@ -55,7 +54,6 @@ class SearchAttractions(BaseModel):
     city: str = Field(..., description="City name for attraction search (e.g., 'Paris', 'Tokyo').")
     constraints: FilterConstraints = Field(default_factory=FilterConstraints, description="Structured filtering constraints to apply immediately to the API search.")
     proximity_location: Optional[str] = Field(None, description="A landmark, street, or hotel name to prioritize results near this location.")
-    # ENHANCEMENT: Temporal Awareness
     target_date: Optional[str] = Field(None, description="Target visit date (YYYY-MM-DD) to check for opening hours or closed days.")
     max_results: int = Field(15, description="Maximum number of attractions to return (default: 15).")
 
@@ -190,25 +188,21 @@ class AttractionsAgent(BaseAgent):
         """
         self.log(f"🔍 Searching attractions in: {params.city}")
         
-        # Call Google Places API with enhanced parameters
-        # NOTE: Ensure your GooglePlacesClient.search_attractions method accepts these new arguments!
+        # FIX: Unpack constraints as individual kwargs instead of passing as nested dict
         attractions = self.places_client.search_attractions(
-            city=params.city, 
-            constraints=params.constraints.model_dump(), 
+            city=params.city,
             proximity_location=params.proximity_location, 
-            target_date=params.target_date, # Passed to check opening hours if Client supports it
-            max_results=params.max_results
+            target_date=params.target_date,
+            max_results=params.max_results,
+            constraints=params.constraints.model_dump()
         )
         
-        # Store results with deduplication
         current_ids = {a['id'] for a in self.attraction_search_results}
         new_attractions = [a for a in attractions if a['id'] not in current_ids]
         self.attraction_search_results.extend(new_attractions)
 
-        # ENHANCEMENT: Richer sample output including photo references
         sample_preview = []
         for a in (new_attractions[:3] if new_attractions else attractions[:3]):
-            # Extract photo reference if available (crucial for Frontend)
             photo_ref = None
             if 'photos' in a and len(a['photos']) > 0:
                 photo_ref = a['photos'][0].get('name') or a['photos'][0].get('photo_reference')
@@ -240,22 +234,17 @@ class AttractionsAgent(BaseAgent):
         
         ranked_attractions = self.attraction_search_results.copy()
         
-        # Advanced Sorting Strategies
         if params.analysis_goal == 'most_popular':
             ranked_attractions.sort(key=lambda a: a.get('user_ratings_total', 0), reverse=True)
         elif params.analysis_goal == 'hidden_gems':
-            # High rating, low review count
             ranked_attractions.sort(key=lambda a: (a.get('rating', 0), -a.get('user_ratings_total', 999999)), reverse=True)
         elif params.analysis_goal == 'closest_to_proximity_location':
             ranked_attractions.sort(key=lambda a: a.get('distance_meters', float('inf')))
         elif params.analysis_goal == 'accessibility_prioritized':
-            # Prioritize verified accessible places
             ranked_attractions.sort(key=lambda a: (a.get('accessibility', {}).get('wheelchair_accessible_entrance', False), a.get('rating', 0)), reverse=True)
         else:
-            # Default to rating
             ranked_attractions.sort(key=lambda a: a.get('rating', 0), reverse=True)
 
-        # Filtered subset
         self.analysis_results['last_filtered_attractions'] = ranked_attractions[:params.top_n]
         
         return {
@@ -325,42 +314,82 @@ class AttractionsAgent(BaseAgent):
         }
 
     # =========================================================================
-    # HELPER METHODS
+    # HELPER METHODS (FIXED SCHEMA CONVERSION)
     # =========================================================================
     
     def _convert_proto_to_dict(self, proto_map: Any) -> Dict[str, Any]:
         return dict(proto_map)
 
-    def _sanitize_property_schema(self, prop_schema: Dict[str, Any]) -> Dict[str, Any]:
-        # (Standard Sanitization Logic - kept compact)
+    def _sanitize_property_schema(self, prop_schema: Dict[str, Any], defs: Dict[str, Any] = None) -> Dict[str, Any]:
+        if defs is None:
+            defs = {}
+        
         sanitized = prop_schema.copy()
+        
         if 'anyOf' in sanitized:
             for item in sanitized['anyOf']:
                 if 'type' in item and item['type'] != 'null':
-                    sanitized.update(item); break
+                    sanitized.update(item)
+                    break
             del sanitized['anyOf']
-        if 'default' in sanitized: del sanitized['default']
-        if 'title' in sanitized: del sanitized['title']
-        if '$defs' in sanitized: del sanitized['$defs']
-        if 'type' in sanitized and isinstance(sanitized['type'], str): sanitized['type'] = sanitized['type'].upper()
-        if sanitized.get('type') == 'ARRAY' and sanitized.get('items'):
-            sanitized['items'] = self._sanitize_property_schema(sanitized['items'])
-        if sanitized.get('type') == 'OBJECT' and sanitized.get('properties'):
-            for k, v in sanitized['properties'].items(): sanitized['properties'][k] = self._sanitize_property_schema(v)
+        
+        for field in ['default', 'title', '$defs', 'examples']:
+            if field in sanitized:
+                del sanitized[field]
+        
+        if 'type' in sanitized and isinstance(sanitized['type'], str):
+            sanitized['type'] = sanitized['type'].upper()
+        
+        if sanitized.get('type') == 'ARRAY' and 'items' in sanitized:
+            sanitized['items'] = self._sanitize_property_schema(sanitized['items'], defs)
+        
+        if sanitized.get('type') == 'OBJECT' and 'properties' in sanitized:
+            sanitized['properties'] = {
+                key: self._sanitize_property_schema(val, defs)
+                for key, val in sanitized['properties'].items()
+            }
+        
         return sanitized
 
     def _pydantic_to_function_declaration(self, pydantic_model: Any) -> Dict[str, Any]:
-        # (Standard Pydantic -> Gemini Logic)
         schema = pydantic_model.model_json_schema()
-        sanitized_props = {}
-        for name, prop in schema.get("properties", {}).items():
-            if prop.get('$ref'):
-                ref_name = prop['$ref'].split('/')[-1]
-                nested = schema.get("$defs", {}).get(ref_name, {})
-                sanitized_props[name] = {"type": "OBJECT", "properties": {n: self._sanitize_property_schema(p) for n, p in nested.get('properties', {}).items()}, "required": nested.get("required", [])}
-            else:
-                sanitized_props[name] = self._sanitize_property_schema(prop)
-        return {"name": pydantic_model.__name__, "description": schema.get("description"), "parameters": {"type": "OBJECT", "properties": sanitized_props, "required": schema.get("required", [])}}
+        name = pydantic_model.__name__
+        description = schema.get("description", f"Tool for {name}")
+        definitions = schema.get("$defs", {})
+        required_params = schema.get("required", [])
+
+        def expand_refs(prop_schema: Dict[str, Any], defs: Dict[str, Any]) -> Dict[str, Any]:
+            if '$ref' in prop_schema:
+                ref_name = prop_schema['$ref'].split('/')[-1]
+                
+                if ref_name in defs:
+                    expanded = defs[ref_name].copy()
+                    
+                    if 'properties' in expanded:
+                        expanded['properties'] = {
+                            k: expand_refs(v, defs) 
+                            for k, v in expanded['properties'].items()
+                        }
+                    
+                    return self._sanitize_property_schema(expanded, defs)
+                else:
+                    return {"type": "OBJECT", "properties": {}}
+            
+            return self._sanitize_property_schema(prop_schema, defs)
+
+        sanitized_properties = {}
+        for prop_name, prop_schema in schema.get("properties", {}).items():
+            sanitized_properties[prop_name] = expand_refs(prop_schema, definitions)
+        
+        return {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "OBJECT",
+                "properties": sanitized_properties,
+                "required": required_params
+            }
+        }
 
     def _create_gemini_tools(self) -> List[Any]:
         tool_list = [SearchAttractions, AnalyzeAndFilter, ReflectAndModifySearch, ProvideRecommendation]

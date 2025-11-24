@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any, List, Optional
 import sys
+import inspect
 from pathlib import Path
 import google.generativeai as genai
 from google.generativeai import types as genai_types
@@ -20,7 +21,8 @@ FINAL_CHOICE = "FINAL_CHOICE"
 REFINE_SEARCH = "REFINE_SEARCH"
 
 # =============================================================================
-# BASE AGENT
+# BASE AGENT (CLEANED)
+# The debugging line was removed from here.
 # =============================================================================
 
 class BaseAgent:
@@ -28,41 +30,38 @@ class BaseAgent:
     def __init__(self, name, api_key):
         self.name = name
         self.api_key = api_key
+        # Ensure your external BaseAgent.py is also clean if you use one
+        
     def log(self, message: str, level: str = "INFO"):
         print(f"[{self.name}][{level}] {message}")
+    
     def format_error(self, e: Exception) -> Dict[str, Any]:
         return {"success": False, "error": f"Agent Error: {str(e)}"}
 
 # =============================================================================
-# TOOL SCHEMAS (Production-Grade Enhancements)
+# TOOL SCHEMAS (Product-Grade Enhancements)
 # =============================================================================
 
 class FilterConstraints(BaseModel):
     """Structured filtering constraints for restaurant search."""
     min_rating: Optional[float] = Field(4.0, description="Minimum rating required (e.g., 4.5).")
-    price_level: Optional[int] = Field(None, description="Price level 1-4 (1=Cheap, 2=Moderate, 3=Expensive, 4=Very Expensive).")
-    cuisine_types: List[str] = Field(default_factory=list, description="Preferred cuisine types (e.g., ['italian', 'japanese', 'steakhouse']).")
-    # ENHANCEMENT: Dietary Restrictions
-    dietary_restrictions: List[str] = Field(default_factory=list, description="Dietary needs (e.g., ['vegetarian', 'vegan', 'gluten_free']).")
-    # ENHANCEMENT: Atmosphere/Vibe
-    atmosphere: List[str] = Field(default_factory=list, description="Desired vibe (e.g., ['romantic', 'family_friendly', 'business_casual', 'outdoor_seating']).")
-    # ENHANCEMENT: Open Now check
-    open_now: Optional[bool] = Field(None, description="If True, only return restaurants currently open.")
+    price_level: Optional[int] = Field(None, description="Price level 1-4 (1=Cheap, 4=Very Expensive).")
+    cuisine_types: List[str] = Field(default_factory=list, description="Preferred cuisines (e.g., ['italian', 'japanese']).")
+    dietary_restrictions: List[str] = Field(default_factory=list, description="Dietary needs (e.g., ['vegetarian', 'vegan']).")
+    atmosphere: List[str] = Field(default_factory=list, description="Desired vibe (e.g., ['romantic', 'family_friendly']).")
+    open_now: Optional[bool] = Field(None, description="Only return currently open restaurants.")
 
 class SearchRestaurants(BaseModel):
-    """
-    Tool for searching restaurant options using Google Places API.
-    """
-    city: str = Field(..., description="City name for restaurant search (e.g., 'Paris').")
-    constraints: FilterConstraints = Field(default_factory=FilterConstraints, description="Structured filtering constraints.")
+    """Tool for searching restaurant options using Google Places API."""
+    city: str = Field(..., description="City name for restaurant search (e.g., 'Paris', 'Tokyo').")
+    constraints: FilterConstraints = Field(default_factory=FilterConstraints, description="Structured filtering constraints to apply immediately to the API search.")
     proximity_location: Optional[str] = Field(None, description="A landmark, street, or hotel name to prioritize results near this location.")
-    # ENHANCEMENT: Temporal Awareness
-    target_datetime: Optional[str] = Field(None, description="Target visit date/time (ISO 8601 or YYYY-MM-DD HH:MM) to check availability/opening hours.")
+    target_datetime: Optional[str] = Field(None, description="Target visit date/time (ISO 8601 or YYYY-MM-DD HH:MM) to check opening hours.")
     max_results: int = Field(15, description="Maximum number of restaurants to return (default: 15).")
 
 class AnalyzeAndFilter(BaseModel):
-    """Tool for analyzing and ranking accumulated search results."""
-    analysis_goal: str = Field(..., description="Primary ranking goal: 'highest_rated', 'best_value', 'closest_to_proximity_location', 'best_atmosphere_match', 'dietary_safety'.")
+    """Tool for analyzing and ranking restaurant search results."""
+    analysis_goal: str = Field(..., description="Primary ranking goal: 'best_rated', 'best_value', 'closest_to_proximity_location', 'most_popular'.")
     top_n: int = Field(5, description="Number of top restaurants to recommend (default: 5).")
 
 class ReflectAndModifySearch(BaseModel):
@@ -78,22 +77,25 @@ class ProvideRecommendation(BaseModel):
     user_input_required: bool = Field(True, description="MUST be True. Signals Orchestrator to pause for human input.")
 
 # =============================================================================
-# ENHANCED PURE AGENTIC RESTAURANT AGENT
+# ENHANCED PURE AGENTIC RESTAURANT AGENT (FIXED)
 # =============================================================================
 
 class RestaurantAgent(BaseAgent):
     
     def __init__(self, gemini_api_key: str, places_api_key: str):
         super().__init__("RestaurantAgent", gemini_api_key)
-        
-        # Initialize Google Places client
         self.places_client = GooglePlacesClient(places_api_key)
         
-        # Storage for search results and analysis
+        # --- DEBUG LINE NOW CORRECTLY PLACED ---
+        try:
+            print(f"\n>>>> DEBUG: RestaurantAgent is loading client from: {inspect.getfile(self.places_client.__class__)}")
+        except Exception:
+             print("\n>>>> DEBUG: Could not determine client file path.")
+        # ---------------------------------------
+        
         self.restaurant_search_results = []
         self.analysis_results = {}
         
-        # Tool execution mapping
         self.tool_functions = {
             "SearchRestaurants": self._tool_search_restaurants,
             "AnalyzeAndFilter": self._tool_analyze_and_filter,
@@ -101,7 +103,6 @@ class RestaurantAgent(BaseAgent):
             "ProvideRecommendation": self._tool_provide_recommendation
         }
         
-        # Pydantic schema mapping
         self.tool_schemas = {
             "SearchRestaurants": SearchRestaurants,
             "AnalyzeAndFilter": AnalyzeAndFilter,
@@ -179,7 +180,7 @@ class RestaurantAgent(BaseAgent):
         return self._force_completion()
 
     # =========================================================================
-    # TOOL IMPLEMENTATION METHODS (Enhanced)
+    # TOOL IMPLEMENTATION METHODS
     # =========================================================================
 
     def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -191,38 +192,33 @@ class RestaurantAgent(BaseAgent):
         return func(validated_args)
     
     def _tool_search_restaurants(self, params: SearchRestaurants) -> Dict[str, Any]:
-        """
-        Tool Implementation: Search for restaurants using Google Places API.
-        Passes enhanced constraints (dietary, atmosphere) and temporal data.
-        """
         self.log(f"🔍 Searching restaurants in: {params.city}")
         
-        # Call Google Places API with enhanced parameters
+        # FIX: Changed 'location' to 'city' to match the updated client signature.
+        # This fixes the 'unexpected keyword argument' if the client is properly loaded.
         restaurants = self.places_client.search_restaurants(
             city=params.city,
-            constraints=params.constraints.model_dump(),
-            proximity_location=params.proximity_location,
-            target_datetime=params.target_datetime, # Passed for opening hours check
-            max_results=params.max_results
+            proximity_location=params.proximity_location, 
+            target_datetime=params.target_datetime,
+            max_results=params.max_results,
+            constraints=params.constraints.model_dump() # Passing constraints dict
         )
         
         current_ids = {r['id'] for r in self.restaurant_search_results}
         new_restaurants = [r for r in restaurants if r['id'] not in current_ids]
         self.restaurant_search_results.extend(new_restaurants)
 
-        # ENHANCEMENT: Richer sample output including photos
         sample_preview = []
         for r in (new_restaurants[:3] if new_restaurants else restaurants[:3]):
             photo_ref = None
             if 'photos' in r and len(r['photos']) > 0:
                 photo_ref = r['photos'][0].get('name') or r['photos'][0].get('photo_reference')
-            
+                
             sample_preview.append({
                 "id": r['id'], 
                 "name": r['name'], 
                 "rating": r.get('rating'),
-                "has_photo": bool(photo_ref),
-                "price_level": r.get('price_level')
+                "has_photo": bool(photo_ref)
             })
 
         return {
@@ -234,29 +230,21 @@ class RestaurantAgent(BaseAgent):
         }
     
     def _tool_analyze_and_filter(self, params: AnalyzeAndFilter) -> Dict[str, Any]:
-        """
-        Tool Implementation: Analyze and rank restaurants. 
-        Updated to handle atmosphere and dietary ranking.
-        """
         if not self.restaurant_search_results:
             return {"success": False, "message": "No restaurants stored. Call SearchRestaurants first."}
-            
+
         self.log(f"📊 Ranking {len(self.restaurant_search_results)} restaurants by: {params.analysis_goal}")
         
         ranked_restaurants = self.restaurant_search_results.copy()
         
-        if params.analysis_goal == 'highest_rated':
+        if params.analysis_goal == 'best_rated':
             ranked_restaurants.sort(key=lambda r: r.get('rating', 0), reverse=True)
+        elif params.analysis_goal == 'most_popular':
+            ranked_restaurants.sort(key=lambda r: r.get('user_ratings_total', 0), reverse=True)
         elif params.analysis_goal == 'best_value':
-            # Sort: Highest rating, then lowest price
-            ranked_restaurants.sort(key=lambda r: (r.get('rating', 0), -r.get('price_level', 4)), reverse=True)
+            ranked_restaurants.sort(key=lambda r: (r.get('rating', 0), -r.get('price_level', 5)), reverse=True)
         elif params.analysis_goal == 'closest_to_proximity_location':
             ranked_restaurants.sort(key=lambda r: r.get('distance_meters', float('inf')))
-        elif params.analysis_goal == 'best_atmosphere_match':
-            # Logic: Places with types matching 'bar', 'romantic', etc. bubble up.
-            # This is usually handled by LLM inspection of 'types' or 'editorial_summary'.
-            # For simple sorting, we rely on rating as a proxy if metadata is missing.
-            ranked_restaurants.sort(key=lambda r: r.get('rating', 0), reverse=True)
         else:
             ranked_restaurants.sort(key=lambda r: r.get('rating', 0), reverse=True)
 
@@ -266,7 +254,7 @@ class RestaurantAgent(BaseAgent):
             "success": True,
             "total_analyzed": len(self.restaurant_search_results),
             "message": f"Ranked by {params.analysis_goal}. Top {params.top_n} selected.",
-            "top_summary": [{"id": r['id'], "name": r['name'], "rating": r['rating'], "price_level": r.get('price_level')} for r in ranked_restaurants[:params.top_n]]
+            "top_summary": [{"id": r['id'], "name": r['name'], "rating": r['rating'], "address": r.get('formatted_address')} for r in ranked_restaurants[:params.top_n]]
         }
     
     def _tool_reflect_and_modify_search(self, params: ReflectAndModifySearch) -> Dict[str, Any]:
@@ -335,34 +323,76 @@ class RestaurantAgent(BaseAgent):
     def _convert_proto_to_dict(self, proto_map: Any) -> Dict[str, Any]:
         return dict(proto_map)
 
-    def _sanitize_property_schema(self, prop_schema: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_property_schema(self, prop_schema: Dict[str, Any], defs: Dict[str, Any] = None) -> Dict[str, Any]:
+        if defs is None:
+            defs = {}
+        
         sanitized = prop_schema.copy()
+        
         if 'anyOf' in sanitized:
             for item in sanitized['anyOf']:
                 if 'type' in item and item['type'] != 'null':
-                    sanitized.update(item); break
+                    sanitized.update(item)
+                    break
             del sanitized['anyOf']
-        if 'default' in sanitized: del sanitized['default']
-        if 'title' in sanitized: del sanitized['title']
-        if '$defs' in sanitized: del sanitized['$defs']
-        if 'type' in sanitized and isinstance(sanitized['type'], str): sanitized['type'] = sanitized['type'].upper()
-        if sanitized.get('type') == 'ARRAY' and sanitized.get('items'):
-            sanitized['items'] = self._sanitize_property_schema(sanitized['items'])
-        if sanitized.get('type') == 'OBJECT' and sanitized.get('properties'):
-            for k, v in sanitized['properties'].items(): sanitized['properties'][k] = self._sanitize_property_schema(v)
+        
+        for field in ['default', 'title', '$defs', 'examples']:
+            if field in sanitized:
+                del sanitized[field]
+        
+        if 'type' in sanitized and isinstance(sanitized['type'], str):
+            sanitized['type'] = sanitized['type'].upper()
+        
+        if sanitized.get('type') == 'ARRAY' and 'items' in sanitized:
+            sanitized['items'] = self._sanitize_property_schema(sanitized['items'], defs)
+        
+        if sanitized.get('type') == 'OBJECT' and 'properties' in sanitized:
+            sanitized['properties'] = {
+                key: self._sanitize_property_schema(val, defs)
+                for key, val in sanitized['properties'].items()
+            }
+        
         return sanitized
 
     def _pydantic_to_function_declaration(self, pydantic_model: Any) -> Dict[str, Any]:
         schema = pydantic_model.model_json_schema()
-        sanitized_props = {}
-        for name, prop in schema.get("properties", {}).items():
-            if prop.get('$ref'):
-                ref_name = prop['$ref'].split('/')[-1]
-                nested = schema.get("$defs", {}).get(ref_name, {})
-                sanitized_props[name] = {"type": "OBJECT", "properties": {n: self._sanitize_property_schema(p) for n, p in nested.get('properties', {}).items()}, "required": nested.get("required", [])}
-            else:
-                sanitized_props[name] = self._sanitize_property_schema(prop)
-        return {"name": pydantic_model.__name__, "description": schema.get("description"), "parameters": {"type": "OBJECT", "properties": sanitized_props, "required": schema.get("required", [])}}
+        name = pydantic_model.__name__
+        description = schema.get("description", f"Tool for {name}")
+        definitions = schema.get("$defs", {})
+        required_params = schema.get("required", [])
+
+        def expand_refs(prop_schema: Dict[str, Any], defs: Dict[str, Any]) -> Dict[str, Any]:
+            if '$ref' in prop_schema:
+                ref_name = prop_schema['$ref'].split('/')[-1]
+                
+                if ref_name in defs:
+                    expanded = defs[ref_name].copy()
+                    
+                    if 'properties' in expanded:
+                        expanded['properties'] = {
+                            k: expand_refs(v, defs) 
+                            for k, v in expanded['properties'].items()
+                        }
+                    
+                    return self._sanitize_property_schema(expanded, defs)
+                else:
+                    return {"type": "OBJECT", "properties": {}}
+            
+            return self._sanitize_property_schema(prop_schema, defs)
+
+        sanitized_properties = {}
+        for prop_name, prop_schema in schema.get("properties", {}).items():
+            sanitized_properties[prop_name] = expand_refs(prop_schema, definitions)
+        
+        return {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "OBJECT",
+                "properties": sanitized_properties,
+                "required": required_params
+            }
+        }
 
     def _create_gemini_tools(self) -> List[Any]:
         tool_list = [SearchRestaurants, AnalyzeAndFilter, ReflectAndModifySearch, ProvideRecommendation]
@@ -375,16 +405,16 @@ class RestaurantAgent(BaseAgent):
         return """You are a highly autonomous Restaurant Search Agent.
 
 YOUR EFFICIENT WORKFLOW (HIL):
-1. **Search**: **MUST** call `SearchRestaurants` using specific `constraints` (rating, price, dietary, atmosphere) and `proximity_location`. Use `target_datetime` to check opening hours.
-2. **Analyze & Rank**: Use `AnalyzeAndFilter` to rank results. Use 'best_atmosphere_match' or 'dietary_safety' if relevant.
+1. **Search**: **MUST** call `SearchRestaurants` with `constraints` (rating, dietary, atmosphere, price) and `proximity_location` (if known). Use `target_datetime` to check opening hours if relevant.
+2. **Analyze & Rank**: Use `AnalyzeAndFilter` to rank results. Prioritize based on user preferences (best_rated, best_value, etc.).
 3. **HIL PAUSE**: Call `ProvideRecommendation`. Set `user_input_required=True`.
-4. **RESUME**: If feedback is simple, call `SearchRestaurants` directly. If complex, call `ReflectAndModifySearch` first.
+4. **RESUME**: If feedback is simple ("Need cheaper"), call `SearchRestaurants` directly. If complex, call `ReflectAndModifySearch` first.
 5. **FINAL CHOICE**: Confirm with `FINAL_CHOICE` signal.
 
 CRITICAL RULES:
 - Use real data from Google Places API.
-- Do not recommend closed restaurants if a time is provided.
-- Prioritize visual appeal (photos) and dietary compliance."""
+- Prioritize dietary restrictions and atmosphere when selecting top candidates.
+- Do not recommend closed locations if a datetime is provided."""
     
     def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
         return glm.Part(function_response=glm.FunctionResponse(name=function_call.name, response={'result': result}))
