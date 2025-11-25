@@ -1,7 +1,7 @@
 """
 FlightAgent - Production Version with Real Amadeus API Integration
 ===================================================================
-FIXED: Conversation history serialization for SDK compatibility
+FIXED: Error handling now returns errors to LLM for autonomous self-correction
 """
 
 import json
@@ -201,7 +201,7 @@ class FlightAgent(BaseAgent):
 - Departure: {departure_date}"""
                 if return_date:
                     user_text += f"\n- Return: {return_date}"
-                user_text += f"\n- Passengers: {passengers}\n\nCall the SearchFlights tool now with these exact parameters."
+                user_text += f"\n- Passengers: {passengers}\n\nCall the SearchFlights tool now with these exact parameters."""
             
             # Add initial user message
             conversation_history.append({
@@ -290,11 +290,36 @@ class FlightAgent(BaseAgent):
         return func(validated_args)
     
     def _tool_search_flights(self, params: SearchFlights) -> Dict[str, Any]:
-        """Tool Implementation: Search for flights using REAL Amadeus API."""
+        """
+        Tool Implementation: Search for flights using REAL Amadeus API.
+        
+        CRITICAL FIX: Returns errors to LLM instead of raising exceptions,
+        enabling autonomous self-correction via ReflectAndModifySearch.
+        """
         self.log(f"🔍 Searching REAL flights via Amadeus: {params.origin} → {params.destination}")
         
         # Call REAL Amadeus API
-        flights = self._search_flights_real_api(params)
+        api_result = self._search_flights_real_api(params)
+        
+        # Check if API call failed
+        if not api_result.get("success"):
+            # Return detailed error to LLM for self-correction
+            error_message = api_result.get("error", "Unknown error")
+            error_details = api_result.get("error_details", {})
+            
+            self.log(f"❌ API Error: {error_message}", "ERROR")
+            
+            return {
+                "success": False,
+                "flights_found_this_call": 0,
+                "total_flights_stored": len(self.flight_search_results),
+                "error": error_message,
+                "error_details": error_details,
+                "message": f"❌ Flight search failed: {error_message}. {error_details.get('suggested_fix', 'Please review your search parameters.')}"
+            }
+        
+        # Success - extract flights and store them
+        flights = api_result.get("flights", [])
         
         # Store results (avoiding duplicates)
         current_ids = {f['id'] for f in self.flight_search_results}
@@ -382,18 +407,23 @@ class FlightAgent(BaseAgent):
         }
     
     # ========================================================================
-    # REAL AMADEUS API INTEGRATION
+    # REAL AMADEUS API INTEGRATION (FIXED FOR AUTONOMOUS SELF-CORRECTION)
     # ========================================================================
     
-    def _search_flights_real_api(self, params: SearchFlights) -> List[Dict]:
+    def _search_flights_real_api(self, params: SearchFlights) -> Dict[str, Any]:
         """
         Search for flights using REAL Amadeus API.
+        
+        CRITICAL FIX: Returns error information instead of raising exceptions to enable
+        autonomous LLM self-correction via ReflectAndModifySearch tool.
         
         Args:
             params: Validated SearchFlights parameters
             
         Returns:
-            List of real flight dictionaries from Amadeus API
+            Dict with either:
+            - {"success": True, "flights": [...]} on success
+            - {"success": False, "error": "...", "error_details": {...}} on failure
         """
         try:
             self.log("📡 Calling Amadeus API for real flight data...")
@@ -409,11 +439,35 @@ class FlightAgent(BaseAgent):
             )
             
             self.log(f"✅ Amadeus returned {len(flights)} real flights")
-            return flights
+            return {"success": True, "flights": flights}
             
         except Exception as e:
-            self.log(f"❌ Amadeus API call failed: {str(e)}", "ERROR")
-            raise Exception(f"Failed to fetch flights from Amadeus API: {str(e)}")
+            # Extract detailed error information for LLM self-correction
+            error_message = str(e)
+            self.log(f"❌ Amadeus API call failed: {error_message}", "ERROR")
+            
+            # Parse common API errors to give LLM actionable feedback
+            error_details = {
+                "origin": params.origin,
+                "destination": params.destination,
+                "departure_date": params.departure_date,
+                "return_date": params.return_date
+            }
+            
+            # Extract specific error details from Amadeus response
+            if "INVALID FORMAT" in error_message or "3-letter code" in error_message:
+                error_details["suggested_fix"] = "Airport codes must be 3-letter IATA codes (e.g., 'SFO' for San Francisco, 'MAD' for Madrid, 'SDR' for Santander). Convert city names to airport codes."
+            elif "No flight" in error_message or "not found" in error_message.lower():
+                error_details["suggested_fix"] = "No flights found for these parameters. Try different dates or nearby airports."
+            else:
+                error_details["suggested_fix"] = "Check if the search parameters are valid."
+            
+            # Return error information for LLM to process
+            return {
+                "success": False,
+                "error": error_message,
+                "error_details": error_details
+            }
     
     # ========================================================================
     # HIL AND FINAL RESPONSE FORMATTING
@@ -593,4 +647,5 @@ CRITICAL RULES:
 - Maintain persistent memory of ALL search results across iterations.
 - Never choose a flight yourself; always use `ProvideRecommendation` to get human confirmation/refinement.
 - The phrase "FINAL_CHOICE_TRIGGER" means you must call FinalizeSelection immediately.
-- **PARAMETER PRESERVATION**: When the message starts with "CONTEXT:", use ONLY those exact origin, destination, departure_date, and return_date values. NEVER change these parameters."""
+- **PARAMETER PRESERVATION**: When the message starts with "CONTEXT:", use ONLY those exact origin, destination, departure_date, and return_date values. NEVER change these parameters.
+- **ERROR HANDLING**: If SearchFlights returns an error (success=False), immediately call `ReflectAndModifySearch` to analyze the error and propose a corrected search with fixed parameters. Use the error_details.suggested_fix to guide your correction."""

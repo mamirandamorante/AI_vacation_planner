@@ -1,7 +1,7 @@
 """
 HotelAgent - Production Version with Real Amadeus API Integration
 ==================================================================
-FIXED: Conversation history serialization for SDK compatibility
+UPDATED: Added autonomous error correction for city code conversion
 """
 
 import json
@@ -284,13 +284,24 @@ Call the SearchHotels tool now with these exact parameters."""
         return func(validated_args)
     
     def _tool_search_hotels(self, params: SearchHotels) -> Dict[str, Any]:
-        """Tool Implementation: Search for hotels using REAL Amadeus API."""
+        """
+        Tool Implementation: Search for hotels using REAL Amadeus API.
+        
+        AUTONOMOUS ERROR CORRECTION: Passes errors to LLM instead of crashing.
+        """
         self.log(f"🔍 Searching REAL hotels via Amadeus in: {params.city_code}")
         
-        # Call REAL Amadeus API
-        hotels = self._search_hotels_real_api(params)
+        # Call REAL Amadeus API (returns hotels or error dict)
+        result = self._search_hotels_real_api(params)
         
-        # Store results
+        # Check if it's an error response
+        if isinstance(result, dict) and not result.get('success', True):
+            # API call failed - return error to LLM for autonomous correction
+            self.log(f"❌ API Error: {result.get('error')}", "ERROR")
+            return result
+        
+        # Success - store results
+        hotels = result
         self.hotel_search_results.extend(hotels)
 
         return {
@@ -362,18 +373,21 @@ Call the SearchHotels tool now with these exact parameters."""
         }
     
     # ========================================================================
-    # REAL AMADEUS API INTEGRATION
+    # REAL AMADEUS API INTEGRATION WITH AUTONOMOUS ERROR CORRECTION
     # ========================================================================
     
-    def _search_hotels_real_api(self, params: SearchHotels) -> List[Dict]:
+    def _search_hotels_real_api(self, params: SearchHotels) -> Union[List[Dict], Dict[str, Any]]:
         """
         Search for hotels using REAL Amadeus API.
+        
+        AUTONOMOUS ERROR CORRECTION: Returns error dictionaries instead of crashing,
+        allowing the LLM to self-correct and retry with proper city codes.
         
         Args:
             params: Validated SearchHotels parameters
             
         Returns:
-            List of real hotel dictionaries from Amadeus API
+            List of hotel dicts on success, or error dict on failure
         """
         try:
             self.log("📡 Calling Amadeus API for real hotel data...")
@@ -391,8 +405,37 @@ Call the SearchHotels tool now with these exact parameters."""
             return hotels
             
         except Exception as e:
-            self.log(f"❌ Amadeus API call failed: {str(e)}", "ERROR")
-            raise Exception(f"Failed to fetch hotels from Amadeus API: {str(e)}")
+            error_str = str(e)
+            self.log(f"❌ Amadeus API call failed: {error_str}", "ERROR")
+            
+            # AUTONOMOUS ERROR CORRECTION: Return error dict with guidance
+            # This allows the LLM to understand the error and self-correct
+            error_response = {
+                "success": False,
+                "error": f"Amadeus API error: {error_str}",
+                "error_details": {
+                    "city_code_attempted": params.city_code,
+                    "check_in_date": params.check_in_date,
+                    "check_out_date": params.check_out_date
+                }
+            }
+            
+            # Add specific guidance based on error type
+            if "Invalid city code format" in error_str or "city code" in error_str.lower():
+                error_response["suggested_fix"] = (
+                    f"City codes must be IATA codes (3 letters). "
+                    f"Convert '{params.city_code}' to proper IATA code. "
+                    f"Examples: 'Madrid'→'MAD', 'Barcelona'→'BCN', 'Paris'→'PAR', 'London'→'LON'"
+                )
+            elif "400" in error_str:
+                error_response["suggested_fix"] = (
+                    "Check that all parameters are in correct format: "
+                    "city_code (3-letter IATA), dates (YYYY-MM-DD), adults (integer)"
+                )
+            else:
+                error_response["suggested_fix"] = "Review all search parameters and try again with valid IATA codes"
+            
+            return error_response
     
     # ========================================================================
     # HIL AND FINAL RESPONSE FORMATTING
@@ -550,6 +593,7 @@ Call the SearchHotels tool now with these exact parameters."""
 
 YOUR WORKFLOW (HIL):
 1.  **Search**: Start by calling `SearchHotels` with the provided parameters.
+    - If SearchHotels returns an error, call `ReflectAndModifySearch` to correct the parameters and retry.
 2.  **Analyze**: Call `AnalyzeAndFilter` to rank results.
 3.  **HIL PAUSE**: Call `ProvideRecommendation` with `user_input_required=True` to pause for human input.
 4.  **RESUME**: If you receive refinement feedback, call `ReflectAndModifySearch` to plan your new strategy, then re-search.
@@ -557,6 +601,7 @@ YOUR WORKFLOW (HIL):
 
 CRITICAL RULES:
 - ALWAYS call a tool on every turn - NEVER give text-only responses
+- If SearchHotels returns error, call ReflectAndModifySearch with corrected parameters
 - Maintain ALL search results across iterations
 - Never choose a hotel yourself - always pause for human confirmation
 - "FINAL_CHOICE_TRIGGER" = call FinalizeSelection immediately

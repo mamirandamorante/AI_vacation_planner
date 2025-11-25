@@ -3,6 +3,9 @@ Amadeus Hotel API Client
 ========================
 This class handles all communication with the Amadeus Hotel API.
 
+UPDATED: Now raises exceptions instead of returning empty lists,
+enabling autonomous error correction in HotelAgent.
+
 What it does:
 - Searches for hotels in a specific city/location
 - Gets hotel details (price, rating, amenities)
@@ -61,6 +64,9 @@ class AmadeusHotelClient:
         """
         Search for hotels in a city
         
+        UPDATED: Now raises exceptions on API errors instead of returning []
+        This enables autonomous error correction in HotelAgent.
+        
         Amadeus Hotel API works in 2 steps:
         1. Search by city to get list of hotel IDs
         2. Get offers (prices) for those hotel IDs
@@ -74,6 +80,9 @@ class AmadeusHotelClient:
             
         Returns:
             List of hotel dictionaries with prices and details
+            
+        Raises:
+            Exception: On API errors (for autonomous correction)
         """
         try:
             print(f"[AmadeusHotelClient] Searching hotels in {city_code}")
@@ -118,22 +127,26 @@ class AmadeusHotelClient:
                 return hotels
                 
             except ResponseError as e:
-                print(f"[AmadeusHotelClient] Offers API ERROR: {e}")
-                return []
+                # AUTONOMOUS ERROR CORRECTION: Re-raise for HotelAgent
+                error_msg = f"Amadeus offers API error: [{e.response.status_code if hasattr(e, 'response') else 'unknown'}]\n\n{e.response.body if hasattr(e, 'response') else str(e)}"
+                print(f"[AmadeusHotelClient] Offers API ERROR: {error_msg}")
+                raise Exception(error_msg)
             except Exception as e:
                 print(f"[AmadeusHotelClient] Offers ERROR: {e}")
                 import traceback
                 traceback.print_exc()
-                return []
+                raise  # Re-raise for HotelAgent
             
         except ResponseError as error:
-            print(f"[AmadeusHotelClient] API ERROR: {error}")
-            print(f"[AmadeusHotelClient] Error details: {error.response.body if hasattr(error, 'response') else 'No details'}")
-            return []
+            # AUTONOMOUS ERROR CORRECTION: Re-raise exceptions so HotelAgent can handle them
+            # Format error message with details for LLM understanding
+            error_msg = f"Amadeus API error: [{error.response.status_code if hasattr(error, 'response') else 'unknown'}]\n\n{error.response.body if hasattr(error, 'response') else str(error)}"
+            print(f"[AmadeusHotelClient] API ERROR: {error_msg}")
+            raise Exception(error_msg)
             
         except Exception as error:
             print(f"[AmadeusHotelClient] ERROR: {error}")
-            return []
+            raise  # Re-raise for HotelAgent to catch and handle
     
     def _format_hotel_offer(self, offer: Dict) -> Dict:
         """

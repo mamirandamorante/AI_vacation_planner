@@ -1,8 +1,10 @@
 """
-Orchestrator Agent - Enhanced for Production-Grade Specialist Agents
-====================================================================
-Coordinates all specialist agents with HIL (Human-in-the-Loop) support.
-FIXED: Continuation messages now preserve original search context.
+Orchestrator Agent - TWO-PHASE HIL VERSION
+==========================================
+Phase 1: User chooses flight and hotel (HIL)
+Phase 2: System auto-selects restaurants/attractions/itinerary
+
+This is simpler, more reliable, and provides better UX.
 """
 
 import json
@@ -19,7 +21,7 @@ FINAL_CHOICE = "FINAL_CHOICE"
 REFINE_SEARCH = "REFINE_SEARCH"
 
 # =============================================================================
-# BASE AGENT (Required for context)
+# BASE AGENT
 # =============================================================================
 
 class BaseAgent:
@@ -33,78 +35,68 @@ class BaseAgent:
         return {"success": False, "error": f"Agent Error: {str(e)}"}
 
 # =============================================================================
-# ORCHESTRATOR TOOL SCHEMAS (Enhanced for Production)
+# ORCHESTRATOR TOOL SCHEMAS
 # =============================================================================
 
 class FlightSearch(BaseModel):
     """Tool schema for triggering FlightAgent."""
-    origin: str = Field(..., description="Origin airport code or city (e.g., 'SFO', 'San Francisco').")
-    destination: str = Field(..., description="Destination airport code or city (e.g., 'CDG', 'Paris').")
+    origin: str = Field(..., description="Origin airport code or city.")
+    destination: str = Field(..., description="Destination airport code or city.")
     departure_date: str = Field(..., description="Departure date in YYYY-MM-DD format.")
     return_date: str = Field(..., description="Return date in YYYY-MM-DD format.")
 
 class HotelSearch(BaseModel):
     """Tool schema for triggering HotelAgent."""
-    city: str = Field(..., description="City for hotel search (e.g., 'Paris').")
+    city: str = Field(..., description="City for hotel search.")
     check_in_date: str = Field(..., description="Check-in date in YYYY-MM-DD format.")
     check_out_date: str = Field(..., description="Check-out date in YYYY-MM-DD format.")
 
 class RestaurantSearchConstraints(BaseModel):
-    """Production-grade filtering constraints for restaurant search."""
-    min_rating: Optional[float] = Field(4.0, description="Minimum rating (e.g., 4.5).")
-    price_level: Optional[int] = Field(None, description="Price level 1-4 (1=Cheap, 4=Very Expensive).")
-    cuisine_types: List[str] = Field(default_factory=list, description="Cuisines (e.g., ['italian', 'japanese']).")
-    dietary_restrictions: List[str] = Field(default_factory=list, description="Dietary needs (e.g., ['vegetarian', 'vegan']).")
-    atmosphere: List[str] = Field(default_factory=list, description="Desired vibe (e.g., ['romantic', 'family_friendly']).")
-    open_now: Optional[bool] = Field(None, description="Only return currently open restaurants.")
+    """Filtering constraints for restaurant search."""
+    min_rating: Optional[float] = Field(4.0, description="Minimum rating.")
+    price_level: Optional[int] = Field(None, description="Price level 1-4.")
+    cuisine_types: List[str] = Field(default_factory=list, description="Cuisines.")
+    dietary_restrictions: List[str] = Field(default_factory=list, description="Dietary needs.")
+    atmosphere: List[str] = Field(default_factory=list, description="Desired vibe.")
+    open_now: Optional[bool] = Field(None, description="Only open restaurants.")
 
 class RestaurantSearch(BaseModel):
-    """Enhanced tool schema for triggering RestaurantAgent."""
-    city: str = Field(..., description="City for restaurant search (e.g., 'Paris').")
-    constraints: RestaurantSearchConstraints = Field(default_factory=RestaurantSearchConstraints, description="Filtering constraints for restaurant search.")
-    proximity_location: Optional[str] = Field(None, description="Landmark or hotel name to prioritize nearby results.")
-    target_datetime: Optional[str] = Field(None, description="Target visit date/time (ISO 8601 or YYYY-MM-DD HH:MM).")
-    max_results: int = Field(15, description="Maximum restaurants to search (default: 15).")
+    """Tool schema for triggering RestaurantAgent."""
+    city: str = Field(..., description="City for restaurant search.")
+    constraints: RestaurantSearchConstraints = Field(default_factory=RestaurantSearchConstraints)
+    proximity_location: Optional[str] = Field(None, description="Hotel name for nearby results.")
+    target_datetime: Optional[str] = Field(None, description="Target visit date/time.")
+    max_results: int = Field(15, description="Maximum restaurants to search.")
 
 class AttractionsSearchConstraints(BaseModel):
-    """Production-grade filtering constraints for attraction search."""
-    min_rating: Optional[float] = Field(4.0, description="Minimum rating (e.g., 4.5).")
-    attraction_types: List[str] = Field(default_factory=list, description="Attraction categories (e.g., ['museum', 'park']).")
-    interests: List[str] = Field(default_factory=list, description="User interests (e.g., ['art', 'history']).")
-    max_entry_fee: Optional[float] = Field(None, description="Maximum entry fee (e.g., 50.0).")
-    is_indoor_outdoor: Optional[str] = Field(None, description="Filter for 'indoor' or 'outdoor'.")
-    wheelchair_accessible: Optional[bool] = Field(None, description="Filter for wheelchair accessibility.")
+    """Filtering constraints for attraction search."""
+    min_rating: Optional[float] = Field(4.0, description="Minimum rating.")
+    attraction_types: List[str] = Field(default_factory=list, description="Attraction categories.")
+    interests: List[str] = Field(default_factory=list, description="User interests.")
+    max_entry_fee: Optional[float] = Field(None, description="Maximum entry fee.")
+    is_indoor_outdoor: Optional[str] = Field(None, description="Filter for indoor/outdoor.")
+    wheelchair_accessible: Optional[bool] = Field(None, description="Wheelchair accessibility.")
 
 class AttractionsSearch(BaseModel):
-    """Enhanced tool schema for triggering AttractionsAgent."""
-    city: str = Field(..., description="City for attraction search (e.g., 'Tokyo').")
-    constraints: AttractionsSearchConstraints = Field(default_factory=AttractionsSearchConstraints, description="Filtering constraints for attraction search.")
-    proximity_location: Optional[str] = Field(None, description="Landmark or hotel to prioritize nearby results.")
-    target_date: Optional[str] = Field(None, description="Target visit date (YYYY-MM-DD) to check opening hours.")
-    max_results: int = Field(15, description="Maximum attractions to search (default: 15).")
+    """Tool schema for triggering AttractionsAgent."""
+    city: str = Field(..., description="City for attraction search.")
+    constraints: AttractionsSearchConstraints = Field(default_factory=AttractionsSearchConstraints)
+    proximity_location: Optional[str] = Field(None, description="Hotel for nearby results.")
+    target_date: Optional[str] = Field(None, description="Target visit date.")
+    max_results: int = Field(15, description="Maximum attractions to search.")
 
 class GenerateItinerary(BaseModel):
     """Tool schema for triggering ItineraryAgent."""
-    trip_summary: str = Field(..., description="Brief summary of finalized trip parameters.")
+    trip_summary: str = Field(..., description="Summary of finalized trip parameters.")
 
 # =============================================================================
-# ORCHESTRATOR AGENT (Enhanced HIL Coordination)
+# TWO-PHASE ORCHESTRATOR AGENT
 # =============================================================================
 
 class OrchestratorAgent(BaseAgent):
     
     def __init__(self, gemini_api_key: str, flight_agent, hotel_agent, restaurant_agent, attractions_agent, itinerary_agent):
-        """
-        Initialize OrchestratorAgent with all specialist agents.
-        
-        Args:
-            gemini_api_key: Google Gemini API key
-            flight_agent: FlightAgent instance
-            hotel_agent: HotelAgent instance
-            restaurant_agent: RestaurantAgent instance (production-grade)
-            attractions_agent: AttractionsAgent instance (production-grade)
-            itinerary_agent: ItineraryAgent instance
-        """
+        """Initialize OrchestratorAgent with two-phase HIL."""
         super().__init__("OrchestratorAgent", gemini_api_key)
         
         # Store specialist agents
@@ -114,7 +106,7 @@ class OrchestratorAgent(BaseAgent):
         self.attractions_agent = attractions_agent
         self.itinerary_agent = itinerary_agent
         
-        # Tool execution mapping - Now using HIL wrappers for all agents
+        # Tool execution mapping
         self.specialist_tools = {
             "FlightSearch": self._tool_flight_search,
             "HotelSearch": self._tool_hotel_search,
@@ -134,14 +126,12 @@ class OrchestratorAgent(BaseAgent):
 
         # Storage for all results
         self.all_results = {}
-        self.all_results['FlightAgent_HIL_TURN_COUNT'] = 0
-        self.all_results['HotelAgent_HIL_TURN_COUNT'] = 0
-        self.all_results['RestaurantAgent_HIL_TURN_COUNT'] = 0
-        self.all_results['AttractionsAgent_HIL_TURN_COUNT'] = 0
         
         # Build system instruction and tools
         self.system_instruction = self._build_system_instruction()
         self.gemini_tools = self._create_gemini_tools()
+
+        genai.configure(api_key=gemini_api_key)
 
         # Initialize Gemini model
         self.model = genai.GenerativeModel(
@@ -150,381 +140,466 @@ class OrchestratorAgent(BaseAgent):
             system_instruction=self.system_instruction,
             generation_config={'temperature': 0.7}
         )
-        self.log("✅ OrchestratorAgent initialized with HIL support for all 4 specialist agents")
+        self.log("✅ OrchestratorAgent initialized with TWO-PHASE HIL")
 
     # =========================================================================
-    # HIL EXECUTION WRAPPER (Manages pause/resume for any agent)
+    # PHASE 1: CRITICAL DECISIONS (HIL)
     # =========================================================================
 
-    def _execute_hil_agent_with_loop(self, agent, initial_params: Dict[str, Any], agent_name: str, item_name: str) -> Dict[str, Any]:
+    def _execute_phase1_agent(self, agent, initial_params: Dict[str, Any], agent_name: str, item_name: str) -> Dict[str, Any]:
         """
-        Manages the Human-in-the-Loop (HIL) pause and resume cycle for a specialist agent.
+        Execute a Phase 1 agent (FlightAgent or HotelAgent) with HIL support.
         
-        FIXED: Continuation messages now include original search context to prevent LLM hallucination.
-        
-        Args:
-            agent: The specialist agent instance (FlightAgent, HotelAgent, etc.)
-            initial_params: Initial search parameters
-            agent_name: Name of agent for logging (e.g., "FlightAgent")
-            item_name: Item type for human interaction (e.g., "flight", "hotel")
-            
-        Returns:
-            Final result dict with status_code (SUCCESS or error)
+        Returns immediately on pause for user input.
         """
-        turn_count = 0
-        max_hil_turns = 5
-        continuation_message = None
+        self.log(f"🎯 Phase 1: Starting {agent_name}...")
         
-        while turn_count < max_hil_turns:
-            turn_count += 1
-            self.log(f"🔗 HIL Loop Turn {turn_count} for {agent_name}...")
-            
-            # Call the agent (initial or continuation)
-            if turn_count == 1:
-                result = agent.execute(initial_params, continuation_message=None)
-            else:
-                result = agent.execute(initial_params, continuation_message=continuation_message)
-            
-            status = result.get('status_code')
-            
-            # HIL PAUSE: Agent needs human input
-            if status == HIL_PAUSE_REQUIRED:
-                self.log(f"⏸️ {agent_name} requires Human-in-the-Loop input. Pausing Orchestrator.")
-                
-                # Extract recommendations
-                recommendations = result.get(f'recommended_{item_name}s', [])
-                
-                # SIMULATE human interaction (in production, this would be real UI)
-                human_decision = self._simulate_human_interaction(agent_name, recommendations, item_name)
-                
-                # CRITICAL FIX: Preserve original search context in continuation message
-                continuation_message = self._build_continuation_message(
-                    human_decision, 
-                    initial_params, 
-                    agent_name
-                )
-                
-                # Check if human made final choice
-                if human_decision.get('status') == FINAL_CHOICE:
-                    self.log(f"✅ Human finalized {item_name} selection. Resuming {agent_name}...")
-                    final_result = agent.execute(initial_params, continuation_message=continuation_message)
-                    return final_result
-                
-                # Human wants refinement
-                elif human_decision.get('status') == REFINE_SEARCH:
-                    self.log(f"🔄 Human requested refinement: {human_decision.get('feedback')}")
-                    continue
-                
-            # SUCCESS: Agent completed successfully
-            elif status == SUCCESS:
-                self.log(f"✅ {agent_name} successfully finalized the {item_name} selection.")
-                return result
-            
-            # ERROR or other status
-            else:
-                self.log(f"❌ {agent_name} returned unexpected status: {status}", "ERROR")
-                return result
+        # Execute agent
+        result = agent.execute(initial_params, continuation_message=None)
         
-        # Max turns reached
-        self.log(f"⚠️ {agent_name} reached maximum HIL turns ({max_hil_turns}). Forcing completion.", "WARN")
-        return {"success": False, "status_code": "HIL_MAX_TURNS_EXCEEDED", "summary": f"{agent_name} exceeded HIL turn limit."}
+        status = result.get('status_code')
+        
+        # HIL PAUSE
+        if status == HIL_PAUSE_REQUIRED:
+            self.log(f"⏸️ {agent_name} paused for user input")
+            recommendations = result.get(f'recommended_{item_name}s', [])
+            summary = result.get('recommendation_summary', f"Here are the top {item_name} options.")
+            
+            return {
+                "status": "awaiting_user_input",
+                "agent": agent_name,
+                "item_type": item_name,
+                "recommendations": recommendations,
+                "summary": summary,
+                "initial_params": initial_params,
+                "phase": 1
+            }
+        
+        # SUCCESS
+        elif status == SUCCESS:
+            self.log(f"✅ {agent_name} completed")
+            return {"status": "success", "result": result}
+        
+        # ERROR
+        else:
+            self.log(f"❌ {agent_name} failed: {status}", "ERROR")
+            return {"status": "error", "error": f"{agent_name} failed"}
 
-    def _build_continuation_message(self, human_decision: Dict[str, Any], initial_params: Dict[str, Any], agent_name: str) -> Dict[str, Any]:
+    def _resume_phase1_agent(self, agent, session_state: Dict[str, Any], user_decision: Dict[str, Any], agent_name: str, item_name: str) -> Dict[str, Any]:
         """
-        CRITICAL FIX: Build continuation message that includes BOTH human feedback AND original search context.
+        Resume a Phase 1 agent after user makes a choice.
+        """
+        self.log(f"▶️ Phase 1: Resuming {agent_name}...")
         
-        This prevents the LLM from hallucinating new search parameters.
+        initial_params = session_state.get('initial_params', {})
         
-        Args:
-            human_decision: Human's decision (refinement feedback or final choice)
-            initial_params: Original search parameters to preserve
-            agent_name: Name of the agent
+        # Build continuation message
+        continuation_message = self._build_continuation_message(user_decision, initial_params, agent_name)
+        
+        # Resume agent
+        result = agent.execute(initial_params, continuation_message=continuation_message)
+        
+        status = result.get('status_code')
+        
+        # Check if pausing again (e.g., after refinement)
+        if status == HIL_PAUSE_REQUIRED:
+            recommendations = result.get(f'recommended_{item_name}s', [])
+            summary = result.get('recommendation_summary', '')
             
-        Returns:
-            Enhanced continuation message with context preservation
-        """
-        # Build context reminder based on agent type - ALWAYS include for all message types
+            return {
+                "status": "awaiting_user_input",
+                "agent": agent_name,
+                "item_type": item_name,
+                "recommendations": recommendations,
+                "summary": summary,
+                "initial_params": initial_params,
+                "phase": 1
+            }
+        
+        # SUCCESS - Agent finalized selection
+        elif status == SUCCESS:
+            self.log(f"✅ {agent_name} finalized selection")
+            return {"status": "success", "result": result}
+        
+        else:
+            return {"status": "error", "error": f"{agent_name} resume failed"}
+
+    def _build_continuation_message(self, user_decision: Dict[str, Any], initial_params: Dict[str, Any], agent_name: str) -> Dict[str, Any]:
+        """Build continuation message with context preservation."""
         if agent_name == "FlightAgent":
             context = f"CONTEXT: You are searching for flights from {initial_params.get('origin')} to {initial_params.get('destination')}, departing {initial_params.get('departure_date')}, returning {initial_params.get('return_date')}."
         elif agent_name == "HotelAgent":
-            context = f"CONTEXT: You are searching for hotels in {initial_params.get('city')}, check-in {initial_params.get('check_in_date')}, check-out {initial_params.get('check_out_date')}, for {initial_params.get('adults', 2)} adults."
-        elif agent_name == "RestaurantAgent":
-            context = f"CONTEXT: You are searching for restaurants in {initial_params.get('city')}."
-        elif agent_name == "AttractionsAgent":
-            context = f"CONTEXT: You are searching for attractions in {initial_params.get('city')}."
+            context = f"CONTEXT: You are searching for hotels in {initial_params.get('city')}, check-in {initial_params.get('check_in_date')}, check-out {initial_params.get('check_out_date')}."
         else:
-            context = "CONTEXT: Continue with the original search parameters."
+            context = "CONTEXT: Continue with original search parameters."
         
-        # Combine context with human feedback
-        if human_decision.get('status') == REFINE_SEARCH:
-            feedback = human_decision.get('feedback', '')
-            content = f"{context}\n\nHuman feedback: {feedback}\n\nModify your search strategy accordingly while maintaining the original search location and dates."
-        elif human_decision.get('status') == FINAL_CHOICE:
-            selection_key = [k for k in human_decision.keys() if k.endswith('_id')]
-            selection_id = human_decision.get(selection_key[0]) if selection_key else 'unknown'
+        if user_decision.get('status') == REFINE_SEARCH:
+            feedback = user_decision.get('feedback', '')
+            content = f"{context}\n\nHuman feedback: {feedback}\n\nModify your search accordingly."
+        elif user_decision.get('status') == FINAL_CHOICE:
+            selection_key = [k for k in user_decision.keys() if k.endswith('_id')]
+            selection_id = user_decision.get(selection_key[0]) if selection_key else 'unknown'
             
-            # Use EXACT trigger phrase from system instruction
             if agent_name == "FlightAgent":
-                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: The human selected flight ID '{selection_id}'. Call FinalizeSelection now with selected_flight_id='{selection_id}' and a confirmation message."
+                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: The human selected flight ID '{selection_id}'. Call FinalizeSelection now."
             elif agent_name == "HotelAgent":
-                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: The human selected hotel ID '{selection_id}'. Call FinalizeSelection now with selected_hotel_id='{selection_id}' and a confirmation message."
+                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: The human selected hotel ID '{selection_id}'. Call FinalizeSelection now."
             else:
-                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: Human selected ID: {selection_id}. Finalize this selection."
+                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: Human selected ID: {selection_id}."
         else:
-            content = f"{context}\n\n{human_decision.get('feedback', 'Continue.')}"
+            content = f"{context}\n\n{user_decision.get('feedback', 'Continue.')}"
         
-        return {
-            **human_decision,  # Preserve original decision structure
-            'content': content,  # Add context-aware content
-            'original_params': initial_params  # Include original params for reference
-        }
-
-    def _simulate_human_interaction(self, agent_name: str, recommendations: List[Dict[str, Any]], item_name: str) -> Dict[str, Any]:
-        """
-        SIMULATED function to pause and receive user input.
-        In production, this would connect to a real UI/API for human decisions.
-        
-        Args:
-            agent_name: Name of the agent requesting input
-            recommendations: List of recommended items from agent
-            item_name: Type of item (flight, hotel, restaurant, attraction)
-            
-        Returns:
-            Human decision dict with status (FINAL_CHOICE or REFINE_SEARCH)
-        """
-        self.log("\n" + "="*50)
-        self.log(f"👤 HUMAN INPUT REQUIRED for {agent_name} ({item_name.upper()})")
-        self.log("="*50)
-
-        if not recommendations:
-            self.log("❗ Agent returned no recommendations. Forcing refinement...")
-            return {'status': REFINE_SEARCH, 'feedback': 'No options were found. Please broaden the search criteria.'}
-
-        # --- SIMULATION LOGIC (Turn-based refinement for FlightAgent only) ---
-        
-        if agent_name == "FlightAgent":
-            if self.all_results['FlightAgent_HIL_TURN_COUNT'] == 0:
-                self.all_results['FlightAgent_HIL_TURN_COUNT'] = 1
-                feedback = "The flight is too expensive, re-search with a maximum budget of $1500 per person."
-                self.log(f"Simulating Human Action (Turn 1): Refinement: {feedback}")
-                return {'status': REFINE_SEARCH, 'feedback': feedback}
-            else:
-                selection_id = recommendations[0]['id'] if recommendations else "FL003"
-                self.log(f"Simulating Human Action (Turn 2): Final Selection: {selection_id}")
-                return {'status': FINAL_CHOICE, 'flight_id': selection_id}
-
-        elif agent_name == "HotelAgent":
-            selection_id = recommendations[0]['id'] if recommendations else "HT001"
-            self.log(f"Simulating Human Action: Final Selection: {selection_id}")
-            return {'status': FINAL_CHOICE, 'hotel_id': selection_id}
-        
-        elif agent_name == "RestaurantAgent":
-            selection_id = recommendations[0]['id'] if recommendations else "REST001"
-            self.log(f"Simulating Human Action: Final Selection: {selection_id}")
-            return {'status': FINAL_CHOICE, 'restaurant_id': selection_id}
-        
-        elif agent_name == "AttractionsAgent":
-            selection_id = recommendations[0]['id'] if recommendations else "ATTR001"
-            self.log(f"Simulating Human Action: Final Selection: {selection_id}")
-            return {'status': FINAL_CHOICE, 'attraction_id': selection_id}
-            
-        else:
-            # Fallback for unknown agents
-            selection_id = recommendations[0]['id'] if recommendations else "UNKNOWN_ID"
-            return {'status': FINAL_CHOICE, f'{item_name}_id': selection_id}
+        return {'content': content, 'original_params': initial_params}
 
     # =========================================================================
-    # TOOL WRAPPER METHODS (HIL Integration Points)
+    # PHASE 2: AUTOMATED COMPLETION (NO HIL)
+    # =========================================================================
+
+    def _execute_phase2(self, trip_details: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute Phase 2: Automatically select restaurants, attractions, and generate itinerary.
+        
+        No user interaction - system makes intelligent choices based on Phase 1 results.
+        Agents will return HIL_PAUSE but we extract their recommendations automatically.
+        """
+        self.log("🚀 Phase 2: Auto-completing restaurants, attractions, and itinerary...")
+        
+        try:
+            # Extract Phase 1 results
+            final_flight = self.all_results.get('final_flight', {})
+            final_hotel = self.all_results.get('final_hotel', {})
+            
+            destination_city = trip_details.get('destination', 'unknown')
+            hotel_location = final_hotel.get('name', destination_city)
+            
+            # Step 1: Auto-select restaurants near hotel
+            self.log("🍽️ Phase 2: Auto-selecting restaurants...")
+            restaurant_params = {
+                'city': destination_city,
+                'proximity_location': hotel_location,
+                'max_results': 10
+            }
+            restaurant_result = self.restaurant_agent.execute(restaurant_params)
+            
+            # Extract recommendations (agent returns HIL_PAUSE but we ignore it)
+            if restaurant_result.get('status_code') == 'HIL_PAUSE_REQUIRED':
+                self.all_results['final_restaurant'] = {
+                    'recommended_restaurants': restaurant_result.get('recommended_restaurants', []),
+                    'summary': restaurant_result.get('recommendation_summary', '')
+                }
+                self.log("✅ Restaurant auto-selected")
+            elif restaurant_result.get('status_code') == SUCCESS:
+                self.all_results['final_restaurant'] = restaurant_result.get('final_restaurant', {})
+                self.log("✅ Restaurant auto-selected")
+            
+            # Step 2: Auto-select attractions near hotel
+            self.log("🎭 Phase 2: Auto-selecting attractions...")
+            attraction_params = {
+                'city': destination_city,
+                'proximity_location': hotel_location,
+                'max_results': 10
+            }
+            attraction_result = self.attractions_agent.execute(attraction_params)
+            
+            # Extract recommendations (agent returns HIL_PAUSE but we ignore it)
+            if attraction_result.get('status_code') == 'HIL_PAUSE_REQUIRED':
+                self.all_results['final_attraction'] = {
+                    'recommended_attractions': attraction_result.get('recommended_attractions', []),
+                    'summary': attraction_result.get('recommendation_summary', '')
+                }
+                self.log("✅ Attraction auto-selected")
+            elif attraction_result.get('status_code') == SUCCESS:
+                self.all_results['final_attraction'] = attraction_result.get('final_attraction', {})
+                self.log("✅ Attraction auto-selected")
+            
+            # Step 3: Generate itinerary with real data
+            self.log("📅 Phase 2: Generating itinerary...")
+            
+            # Extract collected data
+            restaurants = self.all_results.get('final_restaurant', {}).get('recommended_restaurants', [])
+            attractions = self.all_results.get('final_attraction', {}).get('recommended_attractions', [])
+            
+            self.log(f"📊 Passing to ItineraryAgent: {len(restaurants)} restaurants, {len(attractions)} attractions")
+            
+            itinerary_params = {
+                'trip_summary': f"Trip to {destination_city} from {trip_details.get('departure_date')} to {trip_details.get('return_date')}",
+                'departure_date': trip_details.get('departure_date'),
+                'return_date': trip_details.get('return_date'),
+                'destination': destination_city,
+                'restaurants': restaurants,
+                'attractions': attractions
+            }
+            itinerary_result = self.itinerary_agent.execute(itinerary_params)
+            
+            # DEBUG: Log what we received
+            self.log(f"🔍 DEBUG: Itinerary result keys: {list(itinerary_result.keys())}")
+            self.log(f"🔍 DEBUG: Status code: {itinerary_result.get('status_code')}")
+            
+            # Extract itinerary - handle multiple response structures
+            if itinerary_result.get('status_code') == 'HIL_PAUSE_REQUIRED':
+                # ItineraryAgent returned HIL_PAUSE with recommendations
+                itinerary_data = (
+                    itinerary_result.get('itinerary') or 
+                    itinerary_result.get('recommended_itinerary') or 
+                    itinerary_result.get('recommended_itineraries') or
+                    []
+                )
+                self.log(f"🔍 DEBUG: Extracted itinerary data: {len(itinerary_data) if isinstance(itinerary_data, list) else 'not a list'}")
+                
+                self.all_results['itinerary'] = {
+                    'success': True,
+                    'itinerary': itinerary_data,
+                    'summary': itinerary_result.get('recommendation_summary', '')
+                }
+                self.log(f"✅ Itinerary extracted: {len(itinerary_data) if isinstance(itinerary_data, list) else 0} days")
+            elif itinerary_result.get('success'):
+                # ItineraryAgent returned SUCCESS
+                self.all_results['itinerary'] = itinerary_result
+                self.log("✅ Itinerary generated")
+            else:
+                # Fallback - log what we got
+                self.log(f"⚠️ Unexpected itinerary result: {itinerary_result}", "WARN")
+                self.all_results['itinerary'] = {
+                    'success': False,
+                    'itinerary': [],
+                    'summary': 'Itinerary generation incomplete'
+                }
+            
+            self.log("✅ Phase 2 complete!")
+            return {"status": "success"}
+            
+        except Exception as e:
+            self.log(f"❌ Phase 2 error: {str(e)}", "ERROR")
+            return {"status": "error", "error": str(e)}
+
+    # =========================================================================
+    # TOOL WRAPPER METHODS
     # =========================================================================
 
     def _tool_flight_search(self, params: FlightSearch) -> Dict[str, Any]:
-        """Triggers the FlightAgent and handles the HIL pause/resume loop."""
-        self.log("🚀 Starting FlightAgent execution (HIL enabled)...")
-        
-        result = self._execute_hil_agent_with_loop(
-            self.flight_agent, 
-            params.model_dump(), 
-            "FlightAgent", 
+        """Triggers FlightAgent (Phase 1)."""
+        result = self._execute_phase1_agent(
+            self.flight_agent,
+            params.model_dump(),
+            "FlightAgent",
             "flight"
         )
         
-        if result.get('status_code') == SUCCESS:
-            self.all_results['final_flight'] = result.get('final_flight')
-            return {"success": True, "message": "Final flight secured and stored."}
+        if result.get('status') == 'awaiting_user_input':
+            return result
+        elif result.get('status') == 'success':
+            self.all_results['final_flight'] = result['result'].get('final_flight')
+            return {"success": True, "message": "Flight secured"}
         else:
-            return {"success": False, "error": f"Flight search failed or was inconclusive: {result.get('summary')}"}
+            return {"success": False, "error": "Flight search failed"}
 
     def _tool_hotel_search(self, params: HotelSearch) -> Dict[str, Any]:
-        """Triggers the HotelAgent and handles the HIL pause/resume loop."""
-        self.log("🏨 Starting HotelAgent execution (HIL enabled)...")
-        
-        result = self._execute_hil_agent_with_loop(
-            self.hotel_agent, 
-            params.model_dump(), 
-            "HotelAgent", 
+        """Triggers HotelAgent (Phase 1)."""
+        result = self._execute_phase1_agent(
+            self.hotel_agent,
+            params.model_dump(),
+            "HotelAgent",
             "hotel"
         )
         
-        if result.get('status_code') == SUCCESS:
-            self.all_results['final_hotel'] = result.get('final_hotel')
-            return {"success": True, "message": "Final hotel secured and stored."}
+        if result.get('status') == 'awaiting_user_input':
+            return result
+        elif result.get('status') == 'success':
+            self.all_results['final_hotel'] = result['result'].get('final_hotel')
+            return {"success": True, "message": "Hotel secured"}
         else:
-            return {"success": False, "error": f"Hotel search failed or was inconclusive: {result.get('summary')}"}
+            return {"success": False, "error": "Hotel search failed"}
 
     def _tool_restaurant_search(self, params: RestaurantSearch) -> Dict[str, Any]:
-        """Triggers the RestaurantAgent and handles the HIL pause/resume loop."""
-        self.log("🍽️ Starting RestaurantAgent execution (HIL enabled)...")
-        
-        result = self._execute_hil_agent_with_loop(
-            self.restaurant_agent, 
-            params.model_dump(), 
-            "RestaurantAgent", 
-            "restaurant"
-        )
-        
-        if result.get('status_code') == SUCCESS:
-            self.all_results['final_restaurant'] = result.get('final_restaurant')
-            return {"success": True, "message": "Final restaurant secured and stored."}
-        else:
-            return {"success": False, "error": f"Restaurant search failed or was inconclusive: {result.get('summary')}"}
+        """Phase 2 only - called automatically."""
+        return {"success": True, "message": "Restaurant will be auto-selected in Phase 2"}
 
     def _tool_attractions_search(self, params: AttractionsSearch) -> Dict[str, Any]:
-        """Triggers the AttractionsAgent and handles the HIL pause/resume loop."""
-        self.log("🎭 Starting AttractionsAgent execution (HIL enabled)...")
-        
-        result = self._execute_hil_agent_with_loop(
-            self.attractions_agent, 
-            params.model_dump(), 
-            "AttractionsAgent", 
-            "attraction"
-        )
-        
-        if result.get('status_code') == SUCCESS:
-            self.all_results['final_attraction'] = result.get('final_attraction')
-            return {"success": True, "message": "Final attraction secured and stored."}
-        else:
-            return {"success": False, "error": f"Attractions search failed or was inconclusive: {result.get('summary')}"}
+        """Phase 2 only - called automatically."""
+        return {"success": True, "message": "Attractions will be auto-selected in Phase 2"}
 
     # =========================================================================
-    # PUBLIC ENTRY POINT (Main Orchestration Loop)
+    # PUBLIC ENTRY POINTS
     # =========================================================================
 
-    def execute(self, user_prompt: str, max_turns: int = 15) -> Dict[str, Any]:
+    def execute(self, user_prompt: str, max_turns: int = 10) -> Dict[str, Any]:
         """
-        Main orchestration entry point. Coordinates all specialist agents.
-        
-        Args:
-            user_prompt: User's vacation planning request
-            max_turns: Maximum LLM orchestration turns (default: 15)
-            
-        Returns:
-            Complete vacation plan with all selections
+        Main entry point - starts Phase 1 (Flight selection).
         """
-        self.log(f"Starting orchestration for: {user_prompt}")
+        self.log(f"Starting TWO-PHASE orchestration: {user_prompt}")
         
-        # Start chat with orchestrator LLM
+        # Parse user prompt with LLM to extract trip details
         chat = self.model.start_chat()
         response = chat.send_message(user_prompt)
         
-        # Main orchestration loop
-        for turn in range(max_turns):
-            # Extract function calls from response
-            current_function_calls = []
-            if response.candidates and response.candidates[0].content:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, 'function_call') and part.function_call:
-                        current_function_calls.append(part.function_call)
+        # Extract function calls
+        current_function_calls = []
+        if response.candidates and response.candidates[0].content:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'function_call') and part.function_call:
+                    current_function_calls.append(part.function_call)
+        
+        if not current_function_calls:
+            return {"success": False, "error": "Could not parse trip request"}
+        
+        # Execute first tool (should be FlightSearch)
+        func_call = current_function_calls[0]
+        tool_name = func_call.name
+        tool_args = self._convert_proto_to_dict(func_call.args)
+        
+        self.log(f"🎯 Phase 1: Starting with {tool_name}")
+        
+        # Store trip details for Phase 2
+        self.trip_details = tool_args.copy()
+        
+        try:
+            result = self._execute_orchestrator_tool(tool_name, tool_args)
             
-            # If no tool calls, orchestrator is done or stuck
-            if not current_function_calls:
-                final_text = getattr(response, 'text', 'Orchestration complete.')
-                self.log(f"✅ Orchestrator completed. Final message: {final_text}")
+            # Check if paused for HIL
+            if result.get('status') == 'awaiting_user_input':
                 return {
-                    "success": True,
-                    "summary": final_text,
-                    "all_results": self.all_results
+                    "status": "awaiting_user_input",
+                    "session_id": None,  # Will be created by main.py
+                    "agent": result.get('agent'),
+                    "item_type": result.get('item_type'),
+                    "recommendations": result.get('recommendations', []),
+                    "summary": result.get('summary', ''),
+                    "session_state": {
+                        "result": result,
+                        "trip_details": self.trip_details,
+                        "current_phase": "FLIGHT"
+                    }
                 }
             
-            # Execute each tool call
-            tool_results = []
-            for func_call in current_function_calls:
-                tool_name = func_call.name
-                tool_args = self._convert_proto_to_dict(func_call.args)
-                
-                self.log(f"🤖 Orchestrator LLM called tool: {tool_name} with args: {tool_args}")
-                
-                try:
-                    # Execute the tool
-                    result = self._execute_orchestrator_tool(tool_name, tool_args)
-                    tool_results.append(self._create_tool_response(func_call, result))
-                    
-                except Exception as e:
-                    self.log(f"❌ Orchestrator tool execution failed for {tool_name}: {e}", "ERROR")
-                    error_result = {"success": False, "error": str(e)}
-                    tool_results.append(self._create_tool_response(func_call, error_result))
+            return {"success": False, "error": "Unexpected result from FlightAgent"}
             
-            # Send tool results back to orchestrator LLM
-            tool_response_content = glm.Content(
-                role="function",
-                parts=tool_results
-            )
-            response = chat.send_message(tool_response_content)
+        except Exception as e:
+            self.log(f"❌ Orchestration error: {str(e)}", "ERROR")
+            return {"success": False, "error": str(e)}
+
+    def resume(self, session_state: Dict[str, Any], user_decision: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Resume orchestration after user makes a choice.
         
-        # Max turns reached
-        self.log(f"⚠️ Orchestrator reached max turns ({max_turns})", "WARN")
-        return {
-            "success": False,
-            "error": "Orchestrator exceeded maximum turns",
-            "all_results": self.all_results
-        }
+        TWO-PHASE LOGIC:
+        1. If resuming FlightAgent → Complete flight, then start HotelAgent
+        2. If resuming HotelAgent → Complete hotel, then execute Phase 2
+        """
+        self.log("▶️ Resuming TWO-PHASE orchestration...")
+        
+        current_phase = session_state.get('current_phase', 'FLIGHT')
+        hil_result = session_state.get('result', {})
+        trip_details = session_state.get('trip_details', {})
+        
+        agent_name = hil_result.get('agent')
+        item_name = hil_result.get('item_type')
+        
+        # Get agent
+        agent = self.flight_agent if agent_name == "FlightAgent" else self.hotel_agent
+        
+        # Resume the agent
+        result = self._resume_phase1_agent(agent, hil_result, user_decision, agent_name, item_name)
+        
+        # Check if pausing again (refinement)
+        if result.get('status') == 'awaiting_user_input':
+            return {
+                "status": "awaiting_user_input",
+                "agent": result.get('agent'),
+                "item_type": result.get('item_type'),
+                "recommendations": result.get('recommendations', []),
+                "summary": result.get('summary', ''),
+                "session_state": {
+                    "result": result,
+                    "trip_details": trip_details,
+                    "current_phase": current_phase
+                }
+            }
+        
+        # Agent completed
+        if result.get('status') == 'success':
+            # Store result
+            if agent_name == "FlightAgent":
+                self.all_results['final_flight'] = result['result'].get('final_flight')
+                self.log("✅ Flight secured! Moving to HotelAgent...")
+                
+                # Start HotelAgent
+                hotel_params = {
+                    'city': trip_details.get('destination'),
+                    'check_in_date': trip_details.get('departure_date'),
+                    'check_out_date': trip_details.get('return_date')
+                }
+                
+                hotel_result = self._execute_phase1_agent(
+                    self.hotel_agent,
+                    hotel_params,
+                    "HotelAgent",
+                    "hotel"
+                )
+                
+                if hotel_result.get('status') == 'awaiting_user_input':
+                    return {
+                        "status": "awaiting_user_input",
+                        "agent": hotel_result.get('agent'),
+                        "item_type": hotel_result.get('item_type'),
+                        "recommendations": hotel_result.get('recommendations', []),
+                        "summary": hotel_result.get('summary', ''),
+                        "session_state": {
+                            "result": hotel_result,
+                            "trip_details": trip_details,
+                            "current_phase": "HOTEL"
+                        }
+                    }
+            
+            elif agent_name == "HotelAgent":
+                self.all_results['final_hotel'] = result['result'].get('final_hotel')
+                self.log("✅ Hotel secured! Starting Phase 2...")
+                
+                # Execute Phase 2 (automatic)
+                phase2_result = self._execute_phase2(trip_details)
+                
+                if phase2_result.get('status') == 'success':
+                    return {
+                        "status": "complete",
+                        "success": True,
+                        "summary": "Complete vacation plan ready!",
+                        "all_results": self.all_results
+                    }
+        
+        return {"status": "error", "success": False, "error": "Resume failed"}
 
     def _execute_orchestrator_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute an orchestrator tool with Pydantic validation."""
+        """Execute orchestrator tool with validation."""
         schema = self.tool_schemas.get(tool_name)
         func = self.specialist_tools.get(tool_name)
-
         if not schema or not func:
-            raise ValueError(f"Unknown tool or function: {tool_name}")
-        
-        # Validate arguments with Pydantic
+            raise ValueError(f"Unknown tool: {tool_name}")
         validated_args = schema(**tool_args)
-        
-        # Execute the tool
         return func(validated_args)
 
     # =========================================================================
-    # SYSTEM INSTRUCTION & TOOL CONVERSION
+    # UTILITY METHODS
     # =========================================================================
     
     def _build_system_instruction(self) -> str:
-        """Build the system instruction that guides the orchestrator LLM."""
-        return """You are the central Orchestrator Agent for a vacation planning system. Your task is to coordinate specialist agents to create a complete itinerary.
+        """System instruction for two-phase orchestration."""
+        return """You are the Orchestrator Agent for a vacation planning system.
 
-YOUR WORKFLOW:
-1. **Analyze** the user request to extract: origin, destination, dates, preferences (dietary, accessibility, atmosphere, etc.)
-2. **Call agents sequentially**: FlightSearch → HotelSearch → RestaurantSearch → AttractionsSearch → GenerateItinerary
-3. **Pass context between agents**: Use hotel location for RestaurantSearch/AttractionsSearch proximity
-4. **Handle ALL specialist tools**: Each specialized search tool manages its own Human-in-the-Loop process - just wait for successful return
-5. **Finalize**: When all selections are complete (final_flight, final_hotel, final_restaurant, final_attraction), call GenerateItinerary
+YOUR JOB:
+1. Parse the user's vacation request
+2. Extract: origin, destination, departure_date, return_date, passengers, budget
+3. Call FlightSearch with these parameters
 
-ENHANCED FEATURES:
-- **RestaurantSearch** supports: dietary restrictions, atmosphere preferences, price levels, proximity to hotel, open_now filtering
-- **AttractionsSearch** supports: accessibility requirements, indoor/outdoor preferences, max entry fees, attraction types, proximity to hotel
-- **Use proximity_location**: Pass the hotel name/address to RestaurantSearch and AttractionsSearch for better recommendations
-- **Use temporal data**: Pass check-in/out dates and times to ensure restaurants/attractions are open
-
-CRITICAL RULES:
-- ALWAYS extract user preferences and pass them as constraints
-- Use the hotel location as proximity_location for dining/attractions
-- All specialist agents handle their own HIL - you just coordinate the sequence
-- Call GenerateItinerary ONLY after all 4 selections are finalized"""
+CRITICAL:
+- You ONLY call FlightSearch initially
+- The system handles HotelSearch, RestaurantSearch, AttractionsSearch, and GenerateItinerary automatically
+- Extract all trip details accurately from the user's prompt"""
 
     def _convert_proto_to_dict(self, proto_map) -> Dict[str, Any]:
-        """Convert protobuf map to Python dict."""
+        """Convert protobuf map to dict."""
         return dict(proto_map)
 
     def _sanitize_property_schema(self, prop_schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Sanitize a property schema for Gemini compatibility."""
+        """Sanitize property schema for Gemini."""
         sanitized = prop_schema.copy()
         if 'anyOf' in sanitized:
             for item in sanitized['anyOf']:
@@ -535,7 +610,7 @@ CRITICAL RULES:
         if 'default' in sanitized: del sanitized['default']
         if 'title' in sanitized: del sanitized['title']
         if '$defs' in sanitized: del sanitized['$defs']
-        if 'type' in sanitized and isinstance(sanitized['type'], str): 
+        if 'type' in sanitized and isinstance(sanitized['type'], str):
             sanitized['type'] = sanitized['type'].upper()
         if sanitized.get('type') == 'ARRAY' and sanitized.get('items'):
             sanitized['items'] = self._sanitize_property_schema(sanitized['items'])
@@ -545,7 +620,7 @@ CRITICAL RULES:
         return sanitized
 
     def _pydantic_to_function_declaration(self, pydantic_model) -> Dict[str, Any]:
-        """Convert Pydantic model to FunctionDeclaration dict."""
+        """Convert Pydantic to function declaration."""
         schema = pydantic_model.model_json_schema()
         name = pydantic_model.__name__
         description = schema.get("description", f"Tool for {name}")
@@ -558,7 +633,7 @@ CRITICAL RULES:
                 ref_name = prop_schema['$ref'].split('/')[-1]
                 nested_schema = definitions.get(ref_name, {})
                 sanitized_nested_props = {
-                    n_name: self._sanitize_property_schema(n_prop) 
+                    n_name: self._sanitize_property_schema(n_prop)
                     for n_name, n_prop in nested_schema.get('properties', {}).items()
                 }
                 param_schema = {
@@ -577,20 +652,10 @@ CRITICAL RULES:
         }
 
     def _create_gemini_tools(self) -> List:
-        """Convert Pydantic schemas into explicit Tool instances."""
+        """Create Gemini tool declarations."""
         tool_list = [FlightSearch, HotelSearch, RestaurantSearch, AttractionsSearch, GenerateItinerary]
         tools = []
         for pydantic_model in tool_list:
             declaration_dict = self._pydantic_to_function_declaration(pydantic_model)
             tools.append(genai_types.Tool(function_declarations=[declaration_dict]))
-        self.log("✅ Created 5 explicit Tool objects for Orchestrator LLM.")
         return tools
-
-    def _create_tool_response(self, function_call, result: Dict[str, Any]):
-        """Create properly formatted function response for SDK 0.8.5."""
-        return glm.Part(
-            function_response=glm.FunctionResponse(
-                name=function_call.name,
-                response={'result': result}
-            )
-        )

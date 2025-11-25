@@ -17,11 +17,12 @@ app.use(express.json());
 // =============================================================================
 // AUTHENTICATION MIDDLEWARE
 // =============================================================================
-
+// Simple email-based authentication for development
+// Public paths don't require authentication
 const publicPaths = ['/health'];
 
 app.use((req, res, next) => {
-  // Allow public endpoints
+  // Allow public endpoints without authentication
   if (publicPaths.includes(req.path)) {
     return next();
   }
@@ -39,7 +40,7 @@ app.use((req, res, next) => {
   const token = authHeader.split(' ')[1];
   console.log('🔐 Received auth:', token.substring(0, 25) + '...');
 
-  // Simple validation: check if it's an email
+  // Simple validation: check if it's an email format
   if (token && token.includes('@') && token.includes('.')) {
     console.log('✅ User authenticated:', token);
     req.user = { email: token };
@@ -53,7 +54,11 @@ app.use((req, res, next) => {
   });
 });
 
-// Initialize Gemini AI
+// =============================================================================
+// GEMINI AI INITIALIZATION
+// =============================================================================
+// Initialize Gemini AI for potential future use in this layer
+// Currently, the heavy lifting is done by the Python agents
 let model = null;
 if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your-gemini-api-key') {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -67,120 +72,88 @@ if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your-gemini-ap
 // HELPER FUNCTIONS
 // =============================================================================
 
-function simpleFallbackParser(prompt) {
-  console.log('🔧 Using fallback parser...');
-  
-  const lower = prompt.toLowerCase();
-  
-  let origin = 'JFK';
-  if (lower.includes('from santander')) origin = 'SDR';
-  else if (lower.includes('from madrid')) origin = 'MAD';
-  else if (lower.includes('from barcelona')) origin = 'BCN';
-  else if (lower.includes('from new york') || lower.includes('from nyc')) origin = 'JFK';
-  else if (lower.includes('from la') || lower.includes('from los angeles')) origin = 'LAX';
-  
-  let destination = null;
-  if (lower.includes('to madrid') || (lower.includes('madrid') && !lower.includes('from madrid'))) destination = 'MAD';
-  else if (lower.includes('to barcelona') || (lower.includes('barcelona') && !lower.includes('from barcelona'))) destination = 'BCN';
-  else if (lower.includes('to paris')) destination = 'CDG';
-  else if (lower.includes('to london')) destination = 'LHR';
-  
-  // Parse DD.MM.YYYY dates
-  let departure_date = '2025-12-10';
-  const dateMatch = prompt.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-  if (dateMatch) {
-    const [, day, month, year] = dateMatch;
-    departure_date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-  }
-  
-  let days = 5;
-  const daysMatch = prompt.match(/(\d+)\s*days?/i);
-  if (daysMatch) days = parseInt(daysMatch[1]);
-  
-  const departDate = new Date(departure_date);
-  departDate.setDate(departDate.getDate() + days);
-  const return_date = departDate.toISOString().split('T')[0];
-  
-  console.log(`📍 ${origin} → ${destination} | ${departure_date} to ${return_date}`);
-  
-  if (!destination) {
-    return {
-      success: false,
-      needs_clarification: true,
-      missing_fields: ['destination']
-    };
-  }
-  
-  return {
-    success: true,
-    origin,
-    destination,
-    departure_date,
-    return_date,
-    passengers: 2,
-    budget: null,
-    preferences: {}
-  };
-}
-
-async function parseVacationPrompt(prompt) {
-  // Always use fallback for reliability
-  return simpleFallbackParser(prompt);
-}
-
-function convertToAirportCode(city) {
-  const codes = {
-    'santander': 'SDR', 'madrid': 'MAD', 'barcelona': 'BCN',
-    'new york': 'JFK', 'nyc': 'JFK', 'paris': 'CDG',
-    'london': 'LHR', 'los angeles': 'LAX', 'la': 'LAX'
-  };
-  return codes[city?.toLowerCase()] || city?.toUpperCase();
-}
-
+/**
+ * FORMAT COMPLETE VACATION PLAN
+ * 
+ * Takes the results from the Python orchestrator and formats them into
+ * a user-friendly markdown response.
+ * 
+ * This function only handles PRESENTATION, not decision-making or parsing.
+ * All business logic and AI decisions happen in the Python agents layer.
+ * 
+ * @param {Object} results - Results from the orchestrator containing flight, hotel, restaurant, attraction, and itinerary data
+ * @param {Object} travelDetails - Basic trip details for the header (origin, destination, dates)
+ * @returns {string} Formatted markdown string
+ */
 function formatCompleteVacationPlan(results, travelDetails) {
   let plan = `# 🌍 Your Complete Vacation Plan\n\n`;
-  plan += `**Trip:** ${travelDetails.origin} → ${travelDetails.destination}\n`;
-  plan += `**Dates:** ${travelDetails.departure_date} to ${travelDetails.return_date}\n`;
-  plan += `**Travelers:** ${travelDetails.passengers} people\n\n`;
-  plan += `---\n\n`;
   
-  // FLIGHTS
-  plan += `## ✈️ Flights\n\n`;
-  const flightData = results.flights;
-  if (flightData?.success && flightData.flights?.length > 0) {
-    plan += `${flightData.summary}\n\n`;
-    flightData.flights.slice(0, 3).forEach((flight, i) => {
-      plan += `**Option ${i + 1}** - $${flight.price} ${flight.currency}\n`;
-      plan += `- ${flight.outbound.airline}: ${flight.outbound.from} → ${flight.outbound.to}\n`;
-      plan += `  Departs: ${flight.outbound.departure} | Stops: ${flight.outbound.stops}\n\n`;
-    });
+  // Add trip header if we have the basic details
+  if (travelDetails) {
+    if (travelDetails.origin && travelDetails.destination) {
+      plan += `**Trip:** ${travelDetails.origin} → ${travelDetails.destination}\n`;
+    }
+    if (travelDetails.departure_date && travelDetails.return_date) {
+      plan += `**Dates:** ${travelDetails.departure_date} to ${travelDetails.return_date}\n`;
+    }
+    if (travelDetails.passengers) {
+      plan += `**Travelers:** ${travelDetails.passengers} people\n`;
+    }
+    if (travelDetails.budget) {
+      plan += `**Budget:** €${travelDetails.budget}\n`;
+    }
+    plan += `\n---\n\n`;
+  }
+  
+  // FLIGHTS SECTION
+  // Display the user's selected flight from two-phase HIL
+  plan += `## ✈️ Your Flight\n\n`;
+  const finalFlight = results.final_flight;
+  if (finalFlight) {
+    plan += `**${finalFlight.outbound.airline} ${finalFlight.outbound.flight}** - $${finalFlight.price} ${finalFlight.currency}\n\n`;
+    plan += `**Outbound:**\n`;
+    plan += `- ${finalFlight.outbound.from} → ${finalFlight.outbound.to}\n`;
+    plan += `- Departs: ${new Date(finalFlight.outbound.departure).toLocaleString()}\n`;
+    plan += `- Arrives: ${new Date(finalFlight.outbound.arrival).toLocaleString()}\n`;
+    plan += `- Duration: ${finalFlight.outbound.duration} | Stops: ${finalFlight.outbound.stops}\n\n`;
+    
+    if (finalFlight.return) {
+      plan += `**Return:**\n`;
+      plan += `- ${finalFlight.return.from} → ${finalFlight.return.to}\n`;
+      plan += `- Departs: ${new Date(finalFlight.return.departure).toLocaleString()}\n`;
+      plan += `- Arrives: ${new Date(finalFlight.return.arrival).toLocaleString()}\n`;
+      plan += `- Duration: ${finalFlight.return.duration} | Stops: ${finalFlight.return.stops}\n\n`;
+    }
   } else {
     plan += `Flight information unavailable.\n\n`;
   }
   
   plan += `---\n\n`;
   
-  // HOTELS
-  plan += `## 🏨 Hotels\n\n`;
-  const hotelData = results.hotels;
-  if (hotelData?.success && hotelData.hotels?.length > 0) {
-    hotelData.hotels.slice(0, 3).forEach((hotel, i) => {
-      plan += `**${i + 1}. ${hotel.name}** ${'⭐'.repeat(Math.min(hotel.rating, 5))}\n`;
-      plan += `- $${hotel.price}/night | ${hotel.room_type}\n\n`;
-    });
+  // HOTELS SECTION
+  // Display the user's selected hotel from two-phase HIL
+  plan += `## 🏨 Your Hotel\n\n`;
+  const finalHotel = results.final_hotel;
+  if (finalHotel) {
+    plan += `**${finalHotel.name}** ${'⭐'.repeat(Math.min(finalHotel.rating || 0, 5))}\n`;
+    plan += `- $${finalHotel.price}/night\n`;
+    plan += `- Room: ${finalHotel.room_type}\n\n`;
   } else {
-    plan += `Hotel recommendations unavailable.\n\n`;
+    plan += `Hotel information unavailable.\n\n`;
   }
   
   plan += `---\n\n`;
   
-  // RESTAURANTS
-  plan += `## 🍽️ Restaurants\n\n`;
-  const restaurantData = results.restaurants;
-  if (restaurantData?.success && restaurantData.restaurants?.length > 0) {
-    restaurantData.restaurants.slice(0, 5).forEach((rest, i) => {
-      plan += `**${i + 1}. ${rest.name}** ⭐ ${rest.rating}\n`;
-      plan += `- ${rest.cuisine}\n\n`;
+  // RESTAURANTS SECTION
+  // Display auto-selected restaurants from Phase 2
+  plan += `## 🍽️ Recommended Restaurants\n\n`;
+  const finalRestaurant = results.final_restaurant;
+  if (finalRestaurant && finalRestaurant.recommended_restaurants) {
+    finalRestaurant.recommended_restaurants.slice(0, 5).forEach((rest, i) => {
+      plan += `**${i + 1}. ${rest.name}** ⭐ ${rest.rating || 'N/A'}\n`;
+      if (rest.cuisine) plan += `- Cuisine: ${rest.cuisine}\n`;
+      if (rest.address) plan += `- ${rest.address}\n`;
+      plan += `\n`;
     });
   } else {
     plan += `Restaurant recommendations unavailable.\n\n`;
@@ -188,13 +161,16 @@ function formatCompleteVacationPlan(results, travelDetails) {
   
   plan += `---\n\n`;
   
-  // ATTRACTIONS
+  // ATTRACTIONS SECTION
+  // Display auto-selected attractions from Phase 2
   plan += `## 🎭 Things to Do\n\n`;
-  const attractionData = results.attractions;
-  if (attractionData?.success && attractionData.attractions?.length > 0) {
-    attractionData.attractions.slice(0, 5).forEach((attr, i) => {
-      plan += `**${i + 1}. ${attr.name}** ⭐ ${attr.rating}\n`;
-      plan += `- ${attr.type} | ${attr.price}\n\n`;
+  const finalAttraction = results.final_attraction;
+  if (finalAttraction && finalAttraction.recommended_attractions) {
+    finalAttraction.recommended_attractions.slice(0, 5).forEach((attr, i) => {
+      plan += `**${i + 1}. ${attr.name}** ⭐ ${attr.rating || 'N/A'}\n`;
+      if (attr.type) plan += `- Type: ${attr.type}\n`;
+      if (attr.address) plan += `- ${attr.address}\n`;
+      plan += `\n`;
     });
   } else {
     plan += `Attraction recommendations unavailable.\n\n`;
@@ -202,31 +178,40 @@ function formatCompleteVacationPlan(results, travelDetails) {
   
   plan += `---\n\n`;
   
-  // ITINERARY
+  // ITINERARY SECTION
+  // Display day-by-day plan created by the ItineraryAgent
   plan += `## 📅 Day-by-Day Itinerary\n\n`;
   const itineraryData = results.itinerary;
   if (itineraryData?.success && itineraryData.itinerary?.length > 0) {
     itineraryData.itinerary.forEach((day) => {
       plan += `### Day ${day.day} - ${day.date}\n\n`;
+      
+      // Morning activity
       if (day.morning?.activity) {
         plan += `**Morning:** ${day.morning.activity}\n`;
         if (day.morning.location) plan += `📍 ${day.morning.location}\n\n`;
       }
+      
+      // Lunch
       if (day.lunch?.restaurant) {
         plan += `**Lunch:** ${day.lunch.restaurant}\n`;
         if (day.lunch.cuisine) plan += `🍽️ ${day.lunch.cuisine}\n\n`;
       }
+      
+      // Afternoon activity
       if (day.afternoon?.activity) {
         plan += `**Afternoon:** ${day.afternoon.activity}\n`;
         if (day.afternoon.location) plan += `📍 ${day.afternoon.location}\n\n`;
       }
+      
+      // Dinner
       if (day.dinner?.restaurant) {
         plan += `**Dinner:** ${day.dinner.restaurant}\n`;
         if (day.dinner.cuisine) plan += `🍽️ ${day.dinner.cuisine}\n\n`;
       }
     });
   } else {
-    plan += `Itinerary will be generated based on preferences.\n\n`;
+    plan += `Itinerary will be generated based on your preferences.\n\n`;
   }
   
   plan += `---\n\n`;
@@ -235,81 +220,254 @@ function formatCompleteVacationPlan(results, travelDetails) {
 }
 
 // =============================================================================
-// ENDPOINTS
+// API ENDPOINTS
 // =============================================================================
 
+/**
+ * HEALTH CHECK ENDPOINT
+ * Simple endpoint to verify the server is running
+ */
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Vacation Planner API',
+    message: 'Vacation Planner API (Production HIL)',
     timestamp: new Date().toISOString()
   });
 });
 
+/**
+ * PLAN VACATION WITH AGENTS ENDPOINT - PRODUCTION HIL VERSION
+ * 
+ * This endpoint now supports Human-in-the-Loop (HIL) interactions:
+ * 
+ * Flow:
+ * 1. User sends prompt
+ * 2. Backend forwards to Python orchestrator
+ * 3. Orchestrator may PAUSE and return recommendations
+ * 4. Frontend displays recommendations
+ * 5. User makes choice
+ * 6. Frontend calls /api/resume with choice
+ * 7. Process continues until complete
+ * 
+ * @route POST /api/plan-vacation-agents
+ * @body {string} prompt - The raw user input
+ * @returns {Object} Either:
+ *   - {status: "awaiting_user_input", session_id, recommendations, ...}
+ *   - {status: "complete", success: true, data: formatted_plan}
+ *   - {status: "error", success: false, error: message}
+ */
 app.post('/api/plan-vacation-agents', async (req, res) => {
   try {
     const { prompt } = req.body;
-    console.log('📝 User:', req.user?.email);
-    console.log('📝 Prompt:', prompt);
     
-    const travelDetails = await parseVacationPrompt(prompt);
-    
-    if (!travelDetails.success) {
-      return res.json({
+    // Validate that we received a prompt
+    if (!prompt || typeof prompt !== 'string' || prompt.trim() === '') {
+      return res.status(400).json({
         success: false,
-        needs_clarification: true,
-        data: 'Please provide origin, destination, and travel dates.',
-        message: 'Need more information'
+        error: 'Missing or invalid prompt',
+        message: 'Please provide a vacation planning request'
       });
     }
     
-    const origin = convertToAirportCode(travelDetails.origin);
-    const destination = convertToAirportCode(travelDetails.destination);
-    
-    console.log(`✈️  ${origin} → ${destination}`);
-    console.log(`📅 ${travelDetails.departure_date} to ${travelDetails.return_date}`);
+    console.log('📝 User:', req.user?.email);
+    console.log('📝 Prompt:', prompt);
     
     const pythonApiUrl = process.env.PYTHON_AGENT_API_URL || 'http://localhost:8081';
+    
+    console.log('🤖 Sending request to Python orchestrator...');
+    
     const orchestratorResponse = await fetch(`${pythonApiUrl}/api/agents/orchestrate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        origin,
-        destination,
-        departure_date: travelDetails.departure_date,
-        return_date: travelDetails.return_date,
-        passengers: travelDetails.passengers || 2,
-        budget: travelDetails.budget || 2000,
-        preferences: { min_rating: 3, max_stops: 2, flight_class: 'economy' }
+        user_prompt: prompt
       })
     });
     
     const orchestratorData = await orchestratorResponse.json();
     
-    if (!orchestratorData.success) {
-      throw new Error(orchestratorData.error || 'Orchestrator failed');
+    // ==========================================================================
+    // PRODUCTION HIL: Handle different response statuses
+    // ==========================================================================
+    
+    // Case 1: Agent paused for Human-in-the-Loop input
+    if (orchestratorData.status === 'awaiting_user_input') {
+      console.log('⏸️  Agent paused for user input:', orchestratorData.agent);
+      
+      // Forward pause response to frontend
+      return res.json({
+        status: 'awaiting_user_input',
+        session_id: orchestratorData.session_id,
+        agent: orchestratorData.agent,
+        item_type: orchestratorData.item_type,
+        recommendations: orchestratorData.recommendations,
+        summary: orchestratorData.summary,
+        turn: orchestratorData.turn
+      });
     }
     
-    console.log('✅ Plan generated!');
+    // Case 2: Orchestration complete
+    if (orchestratorData.status === 'complete' && orchestratorData.success) {
+      console.log('✅ Plan generated successfully!');
+      
+      const travelDetails = orchestratorData.travel_details || {};
+      const formattedPlan = formatCompleteVacationPlan(
+        orchestratorData.all_results || {}, 
+        travelDetails
+      );
+      
+      return res.json({
+        status: 'complete',
+        success: true,
+        data: formattedPlan,
+        message: 'Vacation plan ready',
+        raw_results: orchestratorData.all_results,
+        travel_details: travelDetails
+      });
+    }
     
-    res.json({
-      success: true,
-      data: formatCompleteVacationPlan(orchestratorData.results, {
-        origin,
-        destination,
-        departure_date: travelDetails.departure_date,
-        return_date: travelDetails.return_date,
-        passengers: travelDetails.passengers || 2,
-        budget: travelDetails.budget
-      }),
-      message: 'Vacation plan ready'
-    });
+    // Case 3: Error occurred
+    if (orchestratorData.status === 'error' || !orchestratorData.success) {
+      throw new Error(orchestratorData.error || 'Orchestrator failed to plan vacation');
+    }
+    
+    // Case 4: Unexpected response
+    console.warn('⚠️  Unexpected orchestrator response:', orchestratorData);
+    throw new Error('Unexpected response from orchestrator');
     
   } catch (error) {
     console.error('❌ Error:', error);
+    
+    // Handle different types of errors appropriately
+    if (error.message.includes('fetch')) {
+      return res.status(503).json({ 
+        status: 'error',
+        success: false, 
+        error: 'Unable to connect to AI agents service',
+        message: 'Please ensure the Python agents service is running on port 8081'
+      });
+    }
+    
     res.status(500).json({ 
+      status: 'error',
       success: false, 
-      error: error.message 
+      error: error.message,
+      message: 'Failed to generate vacation plan'
+    });
+  }
+});
+
+/**
+ * RESUME VACATION PLANNING ENDPOINT - NEW FOR PRODUCTION HIL
+ * 
+ * This endpoint handles user responses after an HIL pause.
+ * 
+ * The user has made a choice (e.g., selected a flight) or provided
+ * refinement feedback (e.g., "too expensive"), and we need to resume
+ * the orchestration process.
+ * 
+ * @route POST /api/resume
+ * @body {string} session_id - Session ID from the pause response
+ * @body {Object} user_decision - User's decision
+ *   - {status: "FINAL_CHOICE", flight_id: "123"} OR
+ *   - {status: "REFINE_SEARCH", feedback: "Too expensive..."}
+ * @returns {Object} Same as /api/plan-vacation-agents:
+ *   - May pause again for next agent
+ *   - Or return complete plan
+ */
+app.post('/api/resume', async (req, res) => {
+  try {
+    const { session_id, user_decision } = req.body;
+    
+    // Validate required fields
+    if (!session_id || !user_decision) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing session_id or user_decision',
+        message: 'Both session_id and user_decision are required to resume'
+      });
+    }
+    
+    console.log('▶️  Resuming session:', session_id);
+    console.log('👤 User decision:', user_decision.status);
+    
+    const pythonApiUrl = process.env.PYTHON_AGENT_API_URL || 'http://localhost:8081';
+    
+    const resumeResponse = await fetch(`${pythonApiUrl}/api/agents/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id,
+        user_decision
+      })
+    });
+    
+    const resumeData = await resumeResponse.json();
+    
+    // ==========================================================================
+    // Handle resume response (same logic as initial request)
+    // ==========================================================================
+    
+    // Case 1: Agent paused again (e.g., moved from FlightAgent to HotelAgent)
+    if (resumeData.status === 'awaiting_user_input') {
+      console.log('⏸️  Agent paused again for user input:', resumeData.agent);
+      
+      return res.json({
+        status: 'awaiting_user_input',
+        session_id: resumeData.session_id || session_id, // Keep same session
+        agent: resumeData.agent,
+        item_type: resumeData.item_type,
+        recommendations: resumeData.recommendations,
+        summary: resumeData.summary,
+        turn: resumeData.turn
+      });
+    }
+    
+    // Case 2: Orchestration complete
+    if (resumeData.status === 'complete' && resumeData.success) {
+      console.log('✅ Orchestration completed after resume!');
+      
+      const travelDetails = resumeData.travel_details || {};
+      const formattedPlan = formatCompleteVacationPlan(
+        resumeData.all_results || {}, 
+        travelDetails
+      );
+      
+      return res.json({
+        status: 'complete',
+        success: true,
+        data: formattedPlan,
+        message: 'Vacation plan ready',
+        raw_results: resumeData.all_results,
+        travel_details: travelDetails
+      });
+    }
+    
+    // Case 3: Error occurred
+    if (resumeData.status === 'error' || !resumeData.success) {
+      throw new Error(resumeData.error || 'Resume failed');
+    }
+    
+    // Case 4: Unexpected response
+    console.warn('⚠️  Unexpected resume response:', resumeData);
+    throw new Error('Unexpected response from resume');
+    
+  } catch (error) {
+    console.error('❌ Resume error:', error);
+    
+    if (error.message.includes('fetch')) {
+      return res.status(503).json({ 
+        status: 'error',
+        success: false, 
+        error: 'Unable to connect to AI agents service'
+      });
+    }
+    
+    res.status(500).json({ 
+      status: 'error',
+      success: false, 
+      error: error.message,
+      message: 'Failed to resume vacation planning'
     });
   }
 });
@@ -319,7 +477,9 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
 // =============================================================================
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Vacation Planner API`);
+  console.log(`\n🚀 Vacation Planner API (Production HIL)`);
   console.log(`📍 http://localhost:${PORT}`);
-  console.log(`🔐 Auth: Email-based\n`);
+  console.log(`🔐 Auth: Email-based`);
+  console.log(`🤖 Agentic Mode: Enabled`);
+  console.log(`⏸️  HIL Support: Production-ready pause/resume\n`);
 });
