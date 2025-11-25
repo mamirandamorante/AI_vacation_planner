@@ -2,7 +2,7 @@
 Orchestrator Agent - Enhanced for Production-Grade Specialist Agents
 ====================================================================
 Coordinates all specialist agents with HIL (Human-in-the-Loop) support.
-Updated to support enhanced tool schemas with production features.
+FIXED: Continuation messages now preserve original search context.
 """
 
 import json
@@ -118,8 +118,8 @@ class OrchestratorAgent(BaseAgent):
         self.specialist_tools = {
             "FlightSearch": self._tool_flight_search,
             "HotelSearch": self._tool_hotel_search,
-            "RestaurantSearch": self._tool_restaurant_search,      # ✅ HIL wrapper
-            "AttractionsSearch": self._tool_attractions_search,    # ✅ HIL wrapper
+            "RestaurantSearch": self._tool_restaurant_search,
+            "AttractionsSearch": self._tool_attractions_search,
             "GenerateItinerary": itinerary_agent.execute,
         }
 
@@ -160,6 +160,8 @@ class OrchestratorAgent(BaseAgent):
         """
         Manages the Human-in-the-Loop (HIL) pause and resume cycle for a specialist agent.
         
+        FIXED: Continuation messages now include original search context to prevent LLM hallucination.
+        
         Args:
             agent: The specialist agent instance (FlightAgent, HotelAgent, etc.)
             initial_params: Initial search parameters
@@ -195,16 +197,22 @@ class OrchestratorAgent(BaseAgent):
                 # SIMULATE human interaction (in production, this would be real UI)
                 human_decision = self._simulate_human_interaction(agent_name, recommendations, item_name)
                 
+                # CRITICAL FIX: Preserve original search context in continuation message
+                continuation_message = self._build_continuation_message(
+                    human_decision, 
+                    initial_params, 
+                    agent_name
+                )
+                
                 # Check if human made final choice
                 if human_decision.get('status') == FINAL_CHOICE:
                     self.log(f"✅ Human finalized {item_name} selection. Resuming {agent_name}...")
-                    final_result = agent.execute(initial_params, continuation_message=human_decision)
+                    final_result = agent.execute(initial_params, continuation_message=continuation_message)
                     return final_result
                 
                 # Human wants refinement
                 elif human_decision.get('status') == REFINE_SEARCH:
                     self.log(f"🔄 Human requested refinement: {human_decision.get('feedback')}")
-                    continuation_message = human_decision
                     continue
                 
             # SUCCESS: Agent completed successfully
@@ -220,6 +228,56 @@ class OrchestratorAgent(BaseAgent):
         # Max turns reached
         self.log(f"⚠️ {agent_name} reached maximum HIL turns ({max_hil_turns}). Forcing completion.", "WARN")
         return {"success": False, "status_code": "HIL_MAX_TURNS_EXCEEDED", "summary": f"{agent_name} exceeded HIL turn limit."}
+
+    def _build_continuation_message(self, human_decision: Dict[str, Any], initial_params: Dict[str, Any], agent_name: str) -> Dict[str, Any]:
+        """
+        CRITICAL FIX: Build continuation message that includes BOTH human feedback AND original search context.
+        
+        This prevents the LLM from hallucinating new search parameters.
+        
+        Args:
+            human_decision: Human's decision (refinement feedback or final choice)
+            initial_params: Original search parameters to preserve
+            agent_name: Name of the agent
+            
+        Returns:
+            Enhanced continuation message with context preservation
+        """
+        # Build context reminder based on agent type - ALWAYS include for all message types
+        if agent_name == "FlightAgent":
+            context = f"CONTEXT: You are searching for flights from {initial_params.get('origin')} to {initial_params.get('destination')}, departing {initial_params.get('departure_date')}, returning {initial_params.get('return_date')}."
+        elif agent_name == "HotelAgent":
+            context = f"CONTEXT: You are searching for hotels in {initial_params.get('city')}, check-in {initial_params.get('check_in_date')}, check-out {initial_params.get('check_out_date')}, for {initial_params.get('adults', 2)} adults."
+        elif agent_name == "RestaurantAgent":
+            context = f"CONTEXT: You are searching for restaurants in {initial_params.get('city')}."
+        elif agent_name == "AttractionsAgent":
+            context = f"CONTEXT: You are searching for attractions in {initial_params.get('city')}."
+        else:
+            context = "CONTEXT: Continue with the original search parameters."
+        
+        # Combine context with human feedback
+        if human_decision.get('status') == REFINE_SEARCH:
+            feedback = human_decision.get('feedback', '')
+            content = f"{context}\n\nHuman feedback: {feedback}\n\nModify your search strategy accordingly while maintaining the original search location and dates."
+        elif human_decision.get('status') == FINAL_CHOICE:
+            selection_key = [k for k in human_decision.keys() if k.endswith('_id')]
+            selection_id = human_decision.get(selection_key[0]) if selection_key else 'unknown'
+            
+            # Use EXACT trigger phrase from system instruction
+            if agent_name == "FlightAgent":
+                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: The human selected flight ID '{selection_id}'. Call FinalizeSelection now with selected_flight_id='{selection_id}' and a confirmation message."
+            elif agent_name == "HotelAgent":
+                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: The human selected hotel ID '{selection_id}'. Call FinalizeSelection now with selected_hotel_id='{selection_id}' and a confirmation message."
+            else:
+                content = f"{context}\n\nFINAL_CHOICE_TRIGGER: Human selected ID: {selection_id}. Finalize this selection."
+        else:
+            content = f"{context}\n\n{human_decision.get('feedback', 'Continue.')}"
+        
+        return {
+            **human_decision,  # Preserve original decision structure
+            'content': content,  # Add context-aware content
+            'original_params': initial_params  # Include original params for reference
+        }
 
     def _simulate_human_interaction(self, agent_name: str, recommendations: List[Dict[str, Any]], item_name: str) -> Dict[str, Any]:
         """

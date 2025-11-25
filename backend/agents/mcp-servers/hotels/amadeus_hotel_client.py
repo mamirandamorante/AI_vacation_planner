@@ -1,22 +1,13 @@
 """
-Amadeus Hotel API Client
-========================
-This class handles all communication with the Amadeus Hotel API.
-
-What it does:
-- Searches for hotels in a specific city/location
-- Gets hotel details (price, rating, amenities)
-- Filters by budget, star rating, distance
-- Returns clean, structured hotel data
-
-Why Amadeus Hotels?
-- Same credentials as flights (easy!)
-- Real hotel data with prices
-- Includes ratings and amenities
-- Free tier for testing
+Amadeus Hotel API Client with SSL Configuration
+================================================
+Handles all communication with the Amadeus Hotel API.
+Includes SSL certificate verification fix.
 """
 
 import os
+import ssl
+import certifi
 from amadeus import Client, ResponseError
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -24,28 +15,25 @@ from datetime import datetime
 
 class AmadeusHotelClient:
     """
-    Wrapper for Amadeus Hotel API
-    
-    Handles authentication and hotel searches
+    Wrapper for Amadeus Hotel API with SSL certificate handling
     """
     
     def __init__(self, api_key: str, api_secret: str):
         """
-        Initialize Amadeus client
-        
-        Args:
-            api_key: Your Amadeus API key
-            api_secret: Your Amadeus API secret
+        Initialize Amadeus client with SSL configuration
         """
         self.api_key = api_key
         self.api_secret = api_secret
         
-        # Create Amadeus client
-        # Use test environment (same as flights)
+        # Configure SSL context to use certifi's certificate bundle
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        
+        # Create Amadeus client with SSL configuration
         self.client = Client(
             client_id=api_key,
             client_secret=api_secret,
-            hostname='test'  # Use test environment
+            hostname='test',
+            ssl=ssl_context  # Add SSL context to client
         )
         
         print("[AmadeusHotelClient] ✅ Initialized successfully")
@@ -61,26 +49,15 @@ class AmadeusHotelClient:
         """
         Search for hotels in a city
         
-        Amadeus Hotel API works in 2 steps:
-        1. Search by city to get list of hotel IDs
-        2. Get offers (prices) for those hotel IDs
-        
-        Args:
-            city_code: City IATA code (e.g., "NYC", "LAX", "BCN")
-            check_in_date: Check-in date (YYYY-MM-DD)
-            check_out_date: Check-out date (YYYY-MM-DD)
-            adults: Number of adults
-            max_results: Maximum number of results
-            
-        Returns:
-            List of hotel dictionaries with prices and details
+        Two-step process:
+        1. Search by city to get hotel IDs
+        2. Get offers (prices) for those hotels
         """
         try:
             print(f"[AmadeusHotelClient] Searching hotels in {city_code}")
             print(f"[AmadeusHotelClient] Check-in: {check_in_date}, Check-out: {check_out_date}")
             
             # STEP 1: Search for hotels by city
-            # This returns hotel IDs in the city
             hotel_search = self.client.reference_data.locations.hotels.by_city.get(
                 cityCode=city_code
             )
@@ -137,42 +114,7 @@ class AmadeusHotelClient:
     
     def _format_hotel_offer(self, offer: Dict) -> Dict:
         """
-        Format Amadeus hotel offer into our standard structure
-        
-        Amadeus hotel response structure:
-        {
-            "hotel": {
-                "hotelId": "XXXXXXXX",
-                "name": "Hotel Name",
-                "rating": "4",
-                "latitude": 40.7128,
-                "longitude": -74.0060
-            },
-            "offers": [
-                {
-                    "id": "offer_id",
-                    "price": {
-                        "total": "250.00",
-                        "currency": "USD"
-                    },
-                    "room": {
-                        "type": "DOUBLE",
-                        "description": "Double Room"
-                    }
-                }
-            ]
-        }
-        
-        We simplify to:
-        {
-            "id": "hotel_id",
-            "name": "Hotel Name",
-            "rating": 4,
-            "price": 250.00,
-            "currency": "USD",
-            "room_type": "Double Room",
-            "location": { "lat": 40.7128, "lng": -74.0060 }
-        }
+        Format Amadeus hotel offer into simplified structure
         """
         try:
             hotel = offer.get('hotel', {})

@@ -57,7 +57,7 @@ app.use((req, res, next) => {
 let model = null;
 if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your-gemini-api-key') {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
   console.log('✅ Gemini AI initialized');
 } else {
   console.log('⚠️  Gemini API key not set');

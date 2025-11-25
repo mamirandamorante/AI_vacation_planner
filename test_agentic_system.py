@@ -667,7 +667,7 @@ class OrchestratorComplexConstraintsTest(TestCase):
         return_date = (datetime.now() + timedelta(days=67)).strftime('%Y-%m-%d')
         
         # Complex query with multiple constraints
-        user_prompt = f"""Plan an accessible anniversary trip from New York to Tokyo.
+        user_prompt = f"""Plan an accessible anniversary trip from Santander to Madrid.
         Departing {departure_date}, returning {return_date}.
         
         Requirements:

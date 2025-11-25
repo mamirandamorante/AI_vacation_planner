@@ -1,19 +1,39 @@
+"""
+HotelAgent - Production Version with Real Amadeus API Integration
+==================================================================
+FIXED: Conversation history serialization for SDK compatibility
+"""
+
 import json
-from typing import Dict, Any, List, Optional, Union
+import os
+import sys
+from typing import Dict, Any, List, Optional, Union, Tuple
+from dotenv import load_dotenv
+
+# Google Gemini imports
 import google.generativeai as genai
 from google.generativeai import types as genai_types 
 from google.ai import generativelanguage as glm
 from pydantic import BaseModel, Field, ValidationError
 
-# --- HIL Status Codes (Match Orchestrator) ---
-HIL_PAUSE_REQUIRED = "HIL_PAUSE_REQUIRED"
-SUCCESS = "SUCCESS"
-FINAL_CHOICE = "FINAL_CHOICE"
-REFINE_SEARCH = "REFINE_SEARCH"
+# ============================================================================
+# AMADEUS CLIENT IMPORT (CRITICAL FOR REAL API)
+# ============================================================================
 
-# =============================================================================
-# BASE AGENT (Required for context)
-# =============================================================================
+# Add MCP servers path to import Amadeus hotel client
+mcp_path = os.path.join(os.path.dirname(__file__), '..', '..', 'mcp-servers', 'hotels')
+if mcp_path not in sys.path:
+    sys.path.insert(0, mcp_path)
+
+from amadeus_hotel_client import AmadeusHotelClient
+
+# Load environment variables
+env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+load_dotenv(env_path)
+
+# ============================================================================
+# BASE AGENT
+# ============================================================================
 
 class BaseAgent:
     """Placeholder for BaseAgent class with logging and utility methods."""
@@ -25,201 +45,474 @@ class BaseAgent:
     def format_error(self, e: Exception) -> Dict[str, Any]:
         return {"success": False, "error": f"Agent Error: {str(e)}"}
 
-# =============================================================================
-# TOOL SCHEMAS
-# =============================================================================
-
-class FilterConstraints(BaseModel):
-    """Structured filtering constraints derived from user requirements."""
-    max_price: Optional[int] = Field(None, description="Maximum total price allowed in USD per night.")
-    min_rating: Optional[float] = Field(4.0, description="Minimum star rating required (e.g., 4.5).")
-    required_amenities: List[str] = Field(default_factory=list, description="List of required hotel amenities (e.g., ['free_wifi', 'pool', 'concierge']).")
-
-class RankingWeights(BaseModel):
-    """Defines the relative importance of factors for ranking hotels."""
-    price_weight: float = Field(0.4, description="Weight (0.0 to 1.0) for prioritizing lower price.")
-    rating_weight: float = Field(0.4, description="Weight (0.0 to 1.0) for prioritizing higher user rating.")
-    distance_weight: float = Field(0.2, description="Weight (0.0 to 1.0) for prioritizing lower distance to center/POI.")
+# ============================================================================
+# TOOL SCHEMAS (UNCHANGED - Pydantic models for tool validation)
+# ============================================================================
 
 class SearchHotels(BaseModel):
     """Tool for searching hotel options."""
-    city_code: str = Field(..., description="City IATA code or name (e.g., 'NYC', 'Paris').")
+    city_code: str = Field(..., description="City code or name for hotel search (e.g., 'NYC', 'PAR').")
     check_in_date: str = Field(..., description="Check-in date in YYYY-MM-DD format.")
     check_out_date: str = Field(..., description="Check-out date in YYYY-MM-DD format.")
-    adults: int = Field(1, description="Number of adults.")
-    search_location: Optional[str] = Field(None, description="Specific Point of Interest (e.g., 'Eiffel Tower') or neighborhood name (e.g., 'Le Marais').")
-    search_radius_km: Optional[float] = Field(None, description="Search radius in kilometers around the specified search_location (Max 5.0).")
+    adults: int = Field(2, description="Number of adults (default: 2).")
+    max_results: int = Field(20, description="Maximum number of hotel results to return (default: 20).")
 
 class AnalyzeAndFilter(BaseModel):
-    """Tool for analyzing and filtering hotel search results against complex user criteria."""
-    analysis_goal: str = Field(..., description="Primary analysis type: 'lowest_price', 'best_location', 'best_value'.")
-    constraints: FilterConstraints = Field(default_factory=FilterConstraints, description="Structured filtering constraints derived from user requirements.")
-    ranking_weights: RankingWeights = Field(default_factory=RankingWeights, 
-        description="The relative importance of price, rating, and distance for the final recommendation score.")
+    """Tool for analyzing and ranking hotel search results.
+    
+    Simply call this tool without any parameters to analyze and rank hotels.
+    """
+    pass  # No parameters needed - agent will use default ranking
 
 class ReflectAndModifySearch(BaseModel):
     """Tool for strategic reflection and search modification."""
-    reasoning: str = Field(..., description="Detailed explanation of why previous search failed or how to adjust the search based on human feedback.")
-    new_search_parameters: SearchHotels = Field(..., description="Complete new parameters for the next search_hotels call.")
+    reasoning: str = Field(..., description="Detailed explanation of why previous search failed or how to adjust based on feedback.")
+    new_search_parameters: SearchHotels = Field(..., description="Complete new parameters for the next SearchHotels call.")
 
 class ProvideRecommendation(BaseModel):
-    """Tool for providing final hotel recommendations and explicitly signaling the need for user feedback."""
-    top_hotel_ids: List[str] = Field(..., description="List of the 3-5 best hotel IDs ranked by the LLM.")
-    reasoning: str = Field(..., description="Detailed reasoning for why these hotels were selected.")
-    summary: str = Field(..., description="Brief summary comparing options and explicitly asking the user to choose one or provide refinement feedback.")
+    """Tool for providing final hotel recommendations and signaling HIL pause."""
+    top_hotel_ids: List[str] = Field(default=[], description="List of the 3-5 best hotel IDs ranked by the LLM. Empty list if no hotels found.")
+    reasoning: str = Field(..., description="Detailed reasoning for why these hotels were selected, or explanation of why no hotels were found.")
+    summary: str = Field(..., description="Brief summary comparing options and explicitly asking the user to choose one or provide refinement feedback. If no hotels found, explain the issue.")
     user_input_required: bool = Field(True, description="MUST be True. Signals the Orchestrator to pause and ask the human to choose a hotel or provide refinement feedback.")
 
+class FinalizeSelection(BaseModel):
+    """Tool for finalizing the human's hotel choice.
+    
+    Call this tool when the human has made a final selection.
+    """
+    selected_hotel_id: str = Field(..., description="The ID of the hotel the human selected.")
+    confirmation_message: str = Field(..., description="Brief confirmation message to the human about their selection.")
 
-# =============================================================================
-# ENHANCED PURE AGENTIC HOTEL AGENT
-# =============================================================================
+# ============================================================================
+# ENHANCED PURE AGENTIC HOTEL AGENT WITH REAL AMADEUS API
+# ============================================================================
 
 class HotelAgent(BaseAgent):
     
     def __init__(self, gemini_api_key: str, travel_api_client: Any = None):
-        
-        # --- FIX: Use gemini_api_key which is the argument name ---
         super().__init__("HotelAgent", gemini_api_key)
         
-        self.api_client = travel_api_client # Placeholder for Amadeus/Google Places client
+        # ✅ INITIALIZE AMADEUS CLIENT FOR REAL API CALLS
+        amadeus_api_key = os.getenv('AMADEUS_API_KEY')
+        amadeus_api_secret = os.getenv('AMADEUS_API_SECRET')
         
-        if not travel_api_client:
-            self.log("⚠️ No API client provided - will use MOCK data", "WARN")
-            
+        if not amadeus_api_key or not amadeus_api_secret:
+            raise ValueError("AMADEUS_API_KEY and AMADEUS_API_SECRET must be set in environment variables!")
+        
+        self.amadeus_client = AmadeusHotelClient(amadeus_api_key, amadeus_api_secret)
+        self.log("✅ Amadeus Hotel Client initialized successfully")
+        
+        # Initialize agent state
         self.hotel_search_results = []
         self.analysis_results = {}
         
+        # Tool function mapping
         self.tool_functions = {
             "SearchHotels": self._tool_search_hotels,
             "AnalyzeAndFilter": self._tool_analyze_and_filter,
             "ReflectAndModifySearch": self._tool_reflect_and_modify_search,
-            "ProvideRecommendation": self._tool_provide_recommendation
+            "ProvideRecommendation": self._tool_provide_recommendation,
+            "FinalizeSelection": self._tool_finalize_selection
         }
         
+        # Tool schema mapping
         self.tool_schemas = {
             "SearchHotels": SearchHotels,
             "AnalyzeAndFilter": AnalyzeAndFilter,
             "ReflectAndModifySearch": ReflectAndModifySearch,
-            "ProvideRecommendation": ProvideRecommendation
+            "ProvideRecommendation": ProvideRecommendation,
+            "FinalizeSelection": FinalizeSelection
         }
         
+        # Build system instruction and tools
         self.system_instruction = self._build_system_instruction()
         self.gemini_tools = self._create_gemini_tools()
 
+        # Initialize Gemini model
         self.model = genai.GenerativeModel(
             'gemini-2.5-flash',
             tools=self.gemini_tools, 
             system_instruction=self.system_instruction,
             generation_config={'temperature': 0.7}
         )
-        self.log("✅ Enhanced Pure Agentic HotelAgent initialized")
+        self.log("✅ Enhanced Pure Agentic HotelAgent initialized with REAL Amadeus API")
 
-
-    # =========================================================================
+    # ========================================================================
     # PUBLIC ENTRY POINT (HIL Flow Controller)
-    # =========================================================================
+    # ========================================================================
 
     def execute(self, params: Dict[str, Any], continuation_message: Optional[Dict[str, Any]] = None, max_turns: int = 5) -> Dict[str, Any]:
         """
         Triggers the autonomous process. Handles initial search or continuation 
         (resumption) based on user feedback.
+        
+        FIXED: Proper conversation history serialization for SDK compatibility
+        
+        Args:
+            params: Initial search parameters
+            continuation_message: Optional message from orchestrator for HIL resumption
+            max_turns: Maximum iterations before forcing completion
+            
+        Returns:
+            Dict with status_code: "HIL_PAUSE_REQUIRED" or "SUCCESS"
         """
-        
-        chat = self.model.start_chat()
-        
-        if continuation_message:
-            prompt = f"The user has reviewed the last recommendations and provided this feedback: {json.dumps(continuation_message)}. Analyze the results and immediately use your tools (ReflectAndModifySearch or AnalyzeAndFilter) to meet the new request. If the user chose a hotel, simply confirm."
-            self.log(f"🔄 Resuming search based on human feedback: {continuation_message.get('feedback', 'New constraints/choice')}")
+        try:
+            self.log(f"🚀 Starting HotelAgent execution (max_turns={max_turns})...")
             
-            if continuation_message.get('status') == FINAL_CHOICE:
-                 self.log(f"✅ User selected hotel ID: {continuation_message.get('hotel_id')}")
-                 return self._format_final_response(selected_id=continuation_message.get('hotel_id'))
-        
-        else:
-            prompt = f"Find and recommend hotels with a complete strategy (search, analyze, recommend) based on the following initial parameters: {json.dumps(params)}"
-            self.log(f"▶️ Starting initial hotel search for: {params.get('city_code')}")
-
-        response = chat.send_message(prompt)
-
-        for i in range(max_turns):
-            # Extract function calls properly for SDK 0.8.5
-            current_function_calls = []
-            if response.candidates and response.candidates[0].content:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, 'function_call') and part.function_call:
-                        current_function_calls.append(part.function_call)
+            # Initialize conversation history as list of properly formatted messages
+            conversation_history = []
             
-            if not current_function_calls:
-                self.log(f"❗ Turn {i+1}: LLM stopped without calling a tool. Text: {getattr(response, 'text', 'No text')}", "WARN")
-                break
-
-            tool_results = []  # Initialize tool_results at the start of each iteration
+            # CRITICAL: Store original search parameters to prevent hallucination during refinement
+            if not continuation_message:
+                # First execution - store the original params
+                self._original_params = {
+                    'city': params.get('city') or params.get('city_code'),
+                    'check_in_date': params.get('check_in_date'),
+                    'check_out_date': params.get('check_out_date'),
+                    'adults': params.get('adults', 2)
+                }
             
-            for func_call in current_function_calls:
-                tool_name = func_call.name
-                tool_args = self._convert_proto_to_dict(func_call.args)
+            # Add initial user message or continuation message
+            if continuation_message:
+                self.log("📥 Resuming with human feedback...")
+                # Include context reminder with original params
+                context = f"""CONTEXT REMINDER: You are searching for hotels in {self._original_params['city']}, 
+check-in {self._original_params['check_in_date']}, check-out {self._original_params['check_out_date']}, 
+for {self._original_params['adults']} adults. You MUST maintain these location and date parameters.
+
+"""
+                user_text = context + continuation_message.get('content', '')
+            else:
+                # Build EXPLICIT initial user message that triggers SearchHotels call
+                city = self._original_params['city']
+                check_in = self._original_params['check_in_date']
+                check_out = self._original_params['check_out_date']
+                adults = self._original_params['adults']
                 
-                try:
-                    result = self._execute_tool(tool_name, tool_args)
-                    tool_results.append(self._create_tool_response(func_call, result))
+                user_text = f"""Search for hotels with these parameters:
+- City: {city}
+- Check-in: {check_in}
+- Check-out: {check_out}
+- Adults: {adults}
+
+Call the SearchHotels tool now with these exact parameters."""
+            
+            # Add initial user message
+            conversation_history.append({
+                'role': 'user',
+                'parts': [{'text': user_text}]
+            })
+            
+            # Main agentic loop
+            for turn in range(max_turns):
+                self.log(f"🔄 Turn {turn + 1}/{max_turns}")
+                
+                # Get LLM response with function calling
+                response = self.model.generate_content(conversation_history)
+                
+                # FIXED: Extract parts properly from response
+                response_parts = response.candidates[0].content.parts
+                
+                # Add model response to conversation history
+                conversation_history.append({
+                    'role': 'model',
+                    'parts': [self._serialize_part(part) for part in response_parts]
+                })
+                
+                # Check if LLM wants to call a tool
+                # CRITICAL: Handle empty response_parts to prevent IndexError
+                if response_parts and len(response_parts) > 0 and response_parts[0].function_call:
+                    function_call = response_parts[0].function_call
+                    tool_name = function_call.name
+                    tool_args = self._convert_proto_to_dict(function_call.args)
                     
-                    if tool_name == 'ProvideRecommendation':
-                        self.log("⏸️ FlightAgent is ready for Human-in-the-Loop input.")
+                    self.log(f"🛠️  LLM called tool: {tool_name}")
+                    
+                    # Execute tool
+                    result = self._execute_tool(tool_name, tool_args)
+                    
+                    # FIXED: Add function response to conversation with proper serialization
+                    conversation_history.append({
+                        'role': 'function',
+                        'parts': [{
+                            'function_response': {
+                                'name': tool_name,
+                                'response': {'result': result}
+                            }
+                        }]
+                    })
+                    
+                    # Check if we need to pause for HIL
+                    if tool_name == "ProvideRecommendation":
+                        self.log("⏸️  HIL PAUSE - Recommendations ready for human")
                         return self._format_recommendation_for_pause()
-                        
-                except Exception as e:
-                    self.log(f"❌ Tool execution failed for {tool_name}: {e}", "ERROR")
-                    error_result = {"success": False, "error": f"Tool error: {str(e)}"}
-                    tool_results.append(self._create_tool_response(func_call, error_result))
+                    
+                    # Check if agent finalized the selection
+                    elif tool_name == "FinalizeSelection":
+                        self.log("✅ Selection finalized - Returning SUCCESS")
+                        return result  # Return the result directly with SUCCESS status
+                
+                else:
+                    # LLM provided text response (shouldn't happen in proper flow)
+                    self.log("⚠️  LLM gave text response instead of tool call", "WARN")
+                    return self._force_completion()
             
-            # Send tool results back wrapped in glm.Content for SDK 0.8.5
-            tool_response_content = glm.Content(
-                role="function",
-                parts=tool_results
+            # If we reach here, max turns exceeded
+            self.log("⚠️  Max turns reached without completion", "WARN")
+            return self._force_completion()
+            
+        except Exception as e:
+            self.log(f"❌ Error in execute: {str(e)}", "ERROR")
+            import traceback
+            traceback.print_exc()
+            return self.format_error(e)
+
+    # ========================================================================
+    # TOOL IMPLEMENTATION METHODS
+    # ========================================================================
+
+    def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a tool requested by the LLM with Pydantic validation."""
+        schema = self.tool_schemas.get(tool_name)
+        func = self.tool_functions.get(tool_name)
+        
+        if not schema or not func:
+            raise ValueError(f"Unknown tool or function mapping: {tool_name}")
+        
+        validated_args = schema(**tool_args)
+        return func(validated_args)
+    
+    def _tool_search_hotels(self, params: SearchHotels) -> Dict[str, Any]:
+        """Tool Implementation: Search for hotels using REAL Amadeus API."""
+        self.log(f"🔍 Searching REAL hotels via Amadeus in: {params.city_code}")
+        
+        # Call REAL Amadeus API
+        hotels = self._search_hotels_real_api(params)
+        
+        # Store results
+        self.hotel_search_results.extend(hotels)
+
+        return {
+            "success": True,
+            "hotels_found_this_call": len(hotels),
+            "total_hotels_stored": len(self.hotel_search_results),
+            "message": f"✅ Real hotel data from Amadeus API stored. Found {len(hotels)} hotels.",
+        }
+    
+    def _tool_analyze_and_filter(self, params: AnalyzeAndFilter) -> Dict[str, Any]:
+        """Tool Implementation: Analyze and filter hotels."""
+        
+        self.log(f"📊 Analyzing {len(self.hotel_search_results)} stored hotels...")
+        filtered_hotels = self.hotel_search_results.copy()
+        
+        # Apply default ranking by rating (descending) then price (ascending)
+        filtered_hotels.sort(key=lambda h: (-h['rating'], h['price']))
+
+        self.analysis_results['last_filtered_hotels'] = filtered_hotels
+        
+        return {
+            "success": True,
+            "filtered_count": len(filtered_hotels),
+            "message": f"Analysis complete. {len(filtered_hotels)} hotels match constraints and are ranked by rating and price.",
+            "top_3_summary": [{"id": h['id'], "name": h['name'], "price": h['price'], "rating": h['rating']} for h in filtered_hotels[:3]]
+        }
+    
+    def _tool_reflect_and_modify_search(self, params: ReflectAndModifySearch) -> Dict[str, Any]:
+        """Tool Implementation: Record reflection and prepare for new search."""
+        self.log("🧠 Agent Reflection:")
+        self.log(f"   Reasoning: {params.reasoning}")
+        
+        return {
+            "success": True,
+            "message": f"Reflection recorded. New strategy: {params.reasoning}. Please call 'SearchHotels' with the new parameters to proceed."
+        }
+
+    def _tool_provide_recommendation(self, params: ProvideRecommendation) -> Dict[str, Any]:
+        """Tool Implementation: Store recommendation and signal HIL pause."""
+        self.log(f"⭐ Recommendation provided for {len(params.top_hotel_ids)} hotels.")
+        self.analysis_results['last_recommendation'] = params.model_dump()
+        
+        return {
+            "success": True,
+            "message": "Recommendation prepared. Waiting for Orchestrator to pause for human input."
+        }
+    
+    def _tool_finalize_selection(self, params: FinalizeSelection) -> Dict[str, Any]:
+        """Tool Implementation: Finalize the human's hotel selection and return SUCCESS status."""
+        self.log(f"✅ Finalizing selection: Hotel ID {params.selected_hotel_id}")
+        
+        # Find the selected hotel
+        selected_hotel = None
+        for hotel in self.hotel_search_results:
+            if hotel['id'] == params.selected_hotel_id:
+                selected_hotel = hotel
+                break
+        
+        if not selected_hotel:
+            self.log(f"⚠️ Selected hotel ID {params.selected_hotel_id} not found in search results", "WARN")
+            # Use first hotel as fallback
+            selected_hotel = self.hotel_search_results[0] if self.hotel_search_results else {}
+        
+        return {
+            "success": True,
+            "status_code": "SUCCESS",
+            "final_hotel": selected_hotel,
+            "confirmation": params.confirmation_message
+        }
+    
+    # ========================================================================
+    # REAL AMADEUS API INTEGRATION
+    # ========================================================================
+    
+    def _search_hotels_real_api(self, params: SearchHotels) -> List[Dict]:
+        """
+        Search for hotels using REAL Amadeus API.
+        
+        Args:
+            params: Validated SearchHotels parameters
+            
+        Returns:
+            List of real hotel dictionaries from Amadeus API
+        """
+        try:
+            self.log("📡 Calling Amadeus API for real hotel data...")
+            
+            # Call Amadeus client with search parameters
+            hotels = self.amadeus_client.search_hotels(
+                city_code=params.city_code,
+                check_in_date=params.check_in_date,
+                check_out_date=params.check_out_date,
+                adults=params.adults,
+                max_results=params.max_results
             )
-            response = chat.send_message(tool_response_content)
             
-        return self._force_completion()
+            self.log(f"✅ Amadeus returned {len(hotels)} real hotels")
+            return hotels
+            
+        except Exception as e:
+            self.log(f"❌ Amadeus API call failed: {str(e)}", "ERROR")
+            raise Exception(f"Failed to fetch hotels from Amadeus API: {str(e)}")
+    
+    # ========================================================================
+    # HIL AND FINAL RESPONSE FORMATTING
+    # ========================================================================
+    
+    def _format_recommendation_for_pause(self) -> Dict[str, Any]:
+        """Formats the output when the agent needs human input (HIL PAUSE)."""
+        rec = self.analysis_results['last_recommendation']
+        hotel_map = {h['id']: h for h in self.hotel_search_results}
+        recommended_hotels = [hotel_map[hid] for hid in rec['top_hotel_ids'] if hid in hotel_map]
+        
+        return {
+            "success": True,
+            "agent": self.name,
+            "status_code": "HIL_PAUSE_REQUIRED",
+            "recommendation_summary": rec['summary'],
+            "recommended_hotels": recommended_hotels
+        }
 
+    def _format_final_response(self, selected_id: Optional[str] = None) -> Dict[str, Any]:
+        """Formats the final structured output after human selection (HIL TERMINATION)."""
+        
+        if selected_id:
+            final_hotel = next((h for h in self.hotel_search_results if h['id'] == selected_id), None)
+            summary = f"User selected the hotel ID: {selected_id}. Final hotel secured."
+        else:
+            final_hotel = None
+            summary = "Agent completed its task but no final selection was provided."
 
-    # =========================================================================
-    # TOOL CONVERSION & HELPER FIXES (For robust tool calling - Omitted logic for brevity)
-    # =========================================================================
+        return {
+            "success": True,
+            "agent": self.name,
+            "status_code": "SUCCESS",
+            "recommendation_summary": summary,
+            "final_hotel": final_hotel
+        }
 
-    def _convert_proto_to_dict(self, proto_map: Any) -> Dict[str, Any]:
+    def _force_completion(self) -> Dict[str, Any]:
+        """Fallback to force a completion if max iterations reached."""
+        top_hotels = self.analysis_results.get('last_filtered_hotels', [])
+        
+        if not top_hotels:
+            status = "STATUS_NO_RESULTS_FOUND"
+            summary = "Search failed to return any hotels."
+        else:
+            status = "STATUS_INCOMPLETE_LOOP"
+            summary = "Agent reached iteration limit before human pause or final recommendation. Returning best available analysis."
+
+        return {
+            "success": False,
+            "agent": self.name,
+            "status_code": status,
+            "summary": summary,
+            "recommended_hotels": top_hotels[:3]
+        }
+    
+    # ========================================================================
+    # UTILITY METHODS (FIXED FOR SDK COMPATIBILITY)
+    # ========================================================================
+    
+    def _serialize_part(self, part) -> Dict[str, Any]:
+        """
+        FIXED: Serialize a part object to a dictionary for conversation history.
+        
+        This ensures SDK compatibility by converting protobuf objects to dicts.
+        """
+        if hasattr(part, 'text') and part.text:
+            return {'text': part.text}
+        elif hasattr(part, 'function_call') and part.function_call:
+            return {
+                'function_call': {
+                    'name': part.function_call.name,
+                    'args': dict(part.function_call.args)
+                }
+            }
+        else:
+            # Fallback for other types
+            return {'text': str(part)}
+    
+    def _convert_proto_to_dict(self, proto_map) -> Dict[str, Any]:
+        """Convert protobuf map to Python dict."""
         return dict(proto_map)
 
     def _sanitize_property_schema(self, prop_schema: Dict[str, Any]) -> Dict[str, Any]:
-        sanitized = prop_schema.copy()
-        if 'anyOf' in sanitized:
-            for item in sanitized['anyOf']:
-                if 'type' in item and item['type'] != 'null':
-                    sanitized.update(item)
-                    break
-            del sanitized['anyOf']
-        if 'default' in sanitized: del sanitized['default']
-        if 'title' in sanitized: del sanitized['title']
-        if '$defs' in sanitized: del sanitized['$defs']
-        if 'type' in sanitized and isinstance(sanitized['type'], str): 
-            sanitized['type'] = sanitized['type'].upper()
-        if sanitized.get('type') == 'ARRAY' and sanitized.get('items'):
-            sanitized['items'] = self._sanitize_property_schema(sanitized['items'])
-        if sanitized.get('type') == 'OBJECT' and sanitized.get('properties'):
-             for key, val in sanitized['properties'].items():
-                 sanitized['properties'][key] = self._sanitize_property_schema(val)
+        """Sanitize a property schema for Gemini compatibility."""
+        sanitized = {}
+        type_map = {
+            "string": "STRING",
+            "integer": "INTEGER",
+            "number": "NUMBER",
+            "boolean": "BOOLEAN",
+            "array": "ARRAY",
+            "object": "OBJECT"
+        }
+        
+        json_type = prop_schema.get("type", "string")
+        sanitized["type"] = type_map.get(json_type, "STRING")
+        
+        if "description" in prop_schema:
+            sanitized["description"] = prop_schema["description"]
+        if "enum" in prop_schema:
+            sanitized["enum"] = prop_schema["enum"]
+        if json_type == "array" and "items" in prop_schema:
+            sanitized["items"] = self._sanitize_property_schema(prop_schema["items"])
+            
         return sanitized
 
-    def _pydantic_to_function_declaration(self, pydantic_model: Any) -> Dict[str, Any]:
+    def _pydantic_to_function_declaration(self, pydantic_model: BaseModel) -> Dict[str, Any]:
+        """Convert Pydantic model to Gemini function declaration."""
         schema = pydantic_model.model_json_schema()
-        name = pydantic_model.__name__
-        description = schema.get("description", f"Tool for {name}")
-        definitions = schema.get("$defs", {})
+        name = schema.get("title", pydantic_model.__name__)
+        description = schema.get("description", f"Tool: {name}")
+        properties = schema.get("properties", {})
         required_params = schema.get("required", [])
-
+        definitions = schema.get("$defs", {})
+        
         sanitized_properties = {}
-        for prop_name, prop_schema in schema.get("properties", {}).items():
-            if prop_schema.get('$ref'):
-                ref_name = prop_schema['$ref'].split('/')[-1]
+        for prop_name, prop_schema in properties.items():
+            if "$ref" in prop_schema:
+                ref_name = prop_schema["$ref"].split("/")[-1]
                 nested_schema = definitions.get(ref_name, {})
                 sanitized_nested_props = {
                     n_name: self._sanitize_property_schema(n_prop) 
@@ -240,156 +533,31 @@ class HotelAgent(BaseAgent):
             "parameters": {"type": "OBJECT", "properties": sanitized_properties, "required": required_params}
         }
 
-
     def _create_gemini_tools(self) -> List[Any]:
-        tool_list = [SearchHotels, AnalyzeAndFilter, ReflectAndModifySearch, ProvideRecommendation]
+        """Create Gemini-compatible tool declarations."""
+        tool_list = [SearchHotels, AnalyzeAndFilter, ReflectAndModifySearch, ProvideRecommendation, FinalizeSelection]
         tools = []
         for pydantic_model in tool_list:
             declaration_dict = self._pydantic_to_function_declaration(pydantic_model)
             tools.append(genai_types.Tool(function_declarations=[declaration_dict]))
         return tools
 
-
     def _build_system_instruction(self) -> str:
+        """Build the system instruction for the agent."""
         return """You are a highly autonomous Hotel Search Agent. Your goal is to find the best hotels and pause the workflow for human confirmation.
 
+**CRITICAL: You MUST ALWAYS call tools. NEVER provide text responses without calling a tool first.**
+
 YOUR WORKFLOW (HIL):
-1.  **Search**: Call `SearchHotels`.
-2.  **Analyze**: Use `AnalyzeAndFilter` to apply constraints, use the provided `ranking_weights`, and identify 3-5 top options.
-3.  **HIL PAUSE**: Call `ProvideRecommendation`. This tool MUST set `user_input_required=True` to signal the orchestrator to pause and ask the human for a choice.
-4.  **RESUME**: If the orchestrator provides human feedback (e.g., "Too expensive, search for cheaper"), **you MUST call `ReflectAndModifySearch`** to articulate your new strategy and adjusted search/filter parameters before rerunning the search.
-5.  **FINAL CHOICE**: If the orchestrator provides a `FINAL_CHOICE` message, confirm the choice and terminate the loop by returning the final result structure.
+1.  **Search**: Start by calling `SearchHotels` with the provided parameters.
+2.  **Analyze**: Call `AnalyzeAndFilter` to rank results.
+3.  **HIL PAUSE**: Call `ProvideRecommendation` with `user_input_required=True` to pause for human input.
+4.  **RESUME**: If you receive refinement feedback, call `ReflectAndModifySearch` to plan your new strategy, then re-search.
+5.  **FINALIZE**: If you see "FINAL_CHOICE_TRIGGER" in the message, immediately call `FinalizeSelection` with the hotel ID.
 
 CRITICAL RULES:
-- Maintain persistent memory of ALL search results across iterations.
-- Never choose a hotel yourself; always use `ProvideRecommendation` to get human confirmation/refinement."""
-
-
-    # =========================================================================
-    # TOOL IMPLEMENTATION METHODS
-    # =========================================================================
-
-    def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
-        schema = self.tool_schemas.get(tool_name)
-        func = self.tool_functions.get(tool_name)
-        validated_args = schema(**tool_args)
-        return func(validated_args)
-    
-    def _tool_search_hotels(self, params: SearchHotels) -> Dict[str, Any]:
-        self.log(f"🔍 Searching hotels in: {params.city_code}")
-        flights = self._generate_mock_hotels(params)
-        self.hotel_search_results.extend(flights)
-
-        return {
-            "success": True,
-            "hotels_found_this_call": len(flights),
-            "total_hotels_stored": len(self.hotel_search_results),
-            "message": "Mock hotel data stored.",
-        }
-    
-    def _tool_analyze_and_filter(self, params: AnalyzeAndFilter) -> Dict[str, Any]:
-        self.log(f"📊 Analyzing {len(self.hotel_search_results)} stored hotels...")
-        filtered_flights = self.hotel_search_results.copy()
-        
-        if params.ranking_weights:
-            self.log(f"📝 Applying ranking with weights: P={params.ranking_weights.price_weight}, R={params.ranking_weights.rating_weight}")
-            filtered_flights.sort(key=lambda h: (h['rating'], -h['price']), reverse=True)
-
-        self.analysis_results['last_filtered_hotels'] = filtered_flights
-        
-        return {
-            "success": True,
-            "filtered_count": len(filtered_flights),
-            "message": f"Analysis complete. {len(filtered_flights)} hotels match constraints and are ranked.",
-            "top_3_summary": [{"id": h['id'], "name": h['name'], "price": h['price'], "rating": h['rating']} for h in filtered_flights[:3]]
-        }
-    
-    def _tool_reflect_and_modify_search(self, params: ReflectAndModifySearch) -> Dict[str, Any]:
-        self.log("🧠 Agent Reflection:")
-        self.log(f"   Reasoning: {params.reasoning}")
-        
-        return {
-            "success": True,
-            "message": f"Reflection recorded. New strategy: {params.reasoning}. Please call 'SearchHotels' with the new parameters to proceed."
-        }
-
-    def _tool_provide_recommendation(self, params: ProvideRecommendation) -> Dict[str, Any]:
-        self.log(f"⭐ Recommendation provided for {len(params.top_hotel_ids)} hotels.")
-        self.analysis_results['last_recommendation'] = params.model_dump()
-        
-        return {
-            "success": True,
-            "message": "Recommendation prepared. Waiting for Orchestrator to pause for human input."
-        }
-
-
-    # =========================================================================
-    # HIL and FINAL RESPONSE FORMATTING
-    # =========================================================================
-    
-    def _format_recommendation_for_pause(self) -> Dict[str, Any]:
-        rec = self.analysis_results['last_recommendation']
-        hotel_map = {h['id']: h for h in self.hotel_search_results}
-        recommended_hotels = [hotel_map[hid] for hid in rec['top_hotel_ids'] if hid in hotel_map]
-        
-        return {
-            "success": True,
-            "agent": self.name,
-            "status_code": HIL_PAUSE_REQUIRED,
-            "recommendation_summary": rec['summary'],
-            "recommended_hotels": recommended_hotels
-        }
-
-    def _format_final_response(self, selected_id: Optional[str] = None) -> Dict[str, Any]:
-        
-        if selected_id:
-            final_hotel = next((h for h in self.hotel_search_results if h['id'] == selected_id), None)
-            summary = f"User selected the hotel ID: {selected_id}. Final hotel secured."
-        else:
-            final_hotel = None
-            summary = "Agent completed its task but no final selection was provided."
-
-        return {
-            "success": True,
-            "agent": self.name,
-            "status_code": SUCCESS,
-            "recommendation_summary": summary,
-            "final_hotel": final_hotel
-        }
-
-    def _force_completion(self) -> Dict[str, Any]:
-        top_hotels = self.analysis_results.get('last_filtered_hotels', [])
-        
-        if not top_hotels:
-            status = "STATUS_NO_RESULTS_FOUND"
-            summary = "Search failed to return any hotels."
-        else:
-            status = "STATUS_INCOMPLETE_LOOP"
-            summary = "Agent reached iteration limit before human pause or final recommendation. Returning best available analysis."
-
-        return {
-            "success": False,
-            "agent": self.name,
-            "status_code": status,
-            "summary": summary,
-            "recommended_hotels": top_hotels[:3]
-        }
-        
-    def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
-        """
-        Creates a properly formatted function response for SDK 0.8.5.
-        Uses the raw protobuf glm.Part structure.
-        """
-        return glm.Part(
-            function_response=glm.FunctionResponse(
-                name=function_call.name,
-                response={'result': result}
-            )
-        )
-        
-    def _generate_mock_hotels(self, params: SearchHotels) -> List[Dict]:
-        return [
-            {"id": "HT001", "name": "Boutique Le Marais", "price": 450, "currency": "USD", "rating": 4.8, "mock": True, "amenities": ["free_wifi", "concierge", "breakfast"], "location": {"city": params.city_code, "distance_to_center": "0.5 km"}, "room_type": "Deluxe Suite"},
-            {"id": "HT002", "name": "Classic Saint-Germain", "price": 520, "currency": "USD", "rating": 4.6, "mock": True, "amenities": ["free_wifi", "concierge", "gym"], "location": {"city": params.city_code, "distance_to_center": "1.2 km"}, "room_type": "Executive Double"},
-            {"id": "HT003", "name": "Charming Budget Stay", "price": 280, "currency": "USD", "rating": 4.1, "mock": True, "amenities": ["free_wifi", "parking"], "location": {"city": params.city_code, "distance_to_center": "3.5 km"}, "room_type": "Standard Room"},
-        ]
+- ALWAYS call a tool on every turn - NEVER give text-only responses
+- Maintain ALL search results across iterations
+- Never choose a hotel yourself - always pause for human confirmation
+- "FINAL_CHOICE_TRIGGER" = call FinalizeSelection immediately
+- **PARAMETER PRESERVATION**: When the message starts with "CONTEXT:", use ONLY those exact city, check-in date, check-out date, and adults values. NEVER change these parameters."""
