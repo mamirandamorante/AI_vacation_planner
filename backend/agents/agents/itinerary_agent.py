@@ -26,49 +26,57 @@ class BaseAgent:
         return {"success": False, "error": f"Agent Error: {str(e)}"}
 
 # =============================================================================
-# TOOL SCHEMAS (SIMPLIFIED - No nested models)
+# AGENTIC TOOL SCHEMAS - LLM makes ALL decisions
 # =============================================================================
 
-class GenerateItinerary(BaseModel):
-    """Tool for generating initial day-by-day itinerary."""
-    departure_date: str = Field(..., description="Departure date (YYYY-MM-DD)")
-    return_date: str = Field(..., description="Return date (YYYY-MM-DD)")
-    destination: str = Field(..., description="Destination city")
-    num_restaurants: int = Field(0, description="Number of available restaurants")
-    num_attractions: int = Field(0, description="Number of available attractions")
-    preferences: Optional[str] = Field(None, description="User preferences like 'relaxed pace', 'packed schedule'")
+class AnalyzeAvailableOptions(BaseModel):
+    """Analyze all available restaurants and attractions before planning."""
+    analysis_notes: str = Field(..., description="Your strategic notes about the available options")
 
-class RefineItinerary(BaseModel):
-    """Tool for refining the itinerary based on feedback."""
-    refinement_request: str = Field(..., description="Specific changes requested (e.g., 'Add more rest time on Day 2')")
-    
-class ProvideItinerary(BaseModel):
-    """Tool for providing final itinerary and signaling HIL pause."""
-    itinerary_summary: str = Field(..., description="Brief summary of the itinerary highlights")
-    num_days: int = Field(..., description="Total number of days in the itinerary")
-    user_input_required: bool = Field(True, description="MUST be True. Signals Orchestrator to pause for human approval.")
+class SelectForTimeSlot(BaseModel):
+    """Select a specific restaurant or attraction for a time slot with reasoning."""
+    day_number: int = Field(..., description="Which day (1-5)")
+    time_slot: str = Field(..., description="Which slot: 'morning', 'lunch', 'afternoon', or 'dinner'")
+    selected_item_id: str = Field(..., description="ID/name of the selected restaurant or attraction")
+    reasoning: str = Field(..., description="Why you selected this item for this slot")
+
+class ReviewItinerary(BaseModel):
+    """Review the current itinerary for quality, variety, and issues."""
+    review_notes: str = Field(..., description="Your assessment of the itinerary quality")
+    has_issues: bool = Field(..., description="Are there problems like repeats or poor distribution?")
+    improvement_suggestions: Optional[str] = Field(None, description="What to fix if there are issues")
+
+class FinalizeItinerary(BaseModel):
+    """Signal that the itinerary is complete and ready for user."""
+    final_summary: str = Field(..., description="Brief summary of the final itinerary")
+    total_days: int = Field(..., description="Number of days planned")
 
 # =============================================================================
-# ENHANCED PURE AGENTIC ITINERARY AGENT
+# TRULY AGENTIC ITINERARY AGENT
 # =============================================================================
 
 class ItineraryAgent(BaseAgent):
     
     def __init__(self, gemini_api_key: str):
         super().__init__("ItineraryAgent", gemini_api_key)
-        self.current_itinerary = None
+        self.current_itinerary = []
         self.trip_data = None
+        self.available_restaurants = []
+        self.available_attractions = []
+        self.used_items = set()  # Track what LLM has already selected
         
         self.tool_functions = {
-            "GenerateItinerary": self._tool_generate_itinerary,
-            "RefineItinerary": self._tool_refine_itinerary,
-            "ProvideItinerary": self._tool_provide_itinerary
+            "AnalyzeAvailableOptions": self._tool_analyze_options,
+            "SelectForTimeSlot": self._tool_select_for_slot,
+            "ReviewItinerary": self._tool_review_itinerary,
+            "FinalizeItinerary": self._tool_finalize_itinerary
         }
         
         self.tool_schemas = {
-            "GenerateItinerary": GenerateItinerary,
-            "RefineItinerary": RefineItinerary,
-            "ProvideItinerary": ProvideItinerary
+            "AnalyzeAvailableOptions": AnalyzeAvailableOptions,
+            "SelectForTimeSlot": SelectForTimeSlot,
+            "ReviewItinerary": ReviewItinerary,
+            "FinalizeItinerary": FinalizeItinerary
         }
         
         self.system_instruction = self._build_system_instruction()
@@ -82,31 +90,57 @@ class ItineraryAgent(BaseAgent):
             system_instruction=self.system_instruction,
             generation_config={'temperature': 0.7}
         )
-        self.log("✅ Enhanced Pure Agentic ItineraryAgent initialized")
+        self.log("✅ Truly Agentic ItineraryAgent initialized")
 
     # =========================================================================
-    # SYSTEM INSTRUCTION
+    # SYSTEM INSTRUCTION - Forces agentic workflow
     # =========================================================================
     
     def _build_system_instruction(self) -> str:
         """Build the system instruction for the agent."""
-        return """You are an expert Itinerary Agent that creates day-by-day vacation plans.
+        return """You are an expert Itinerary Planning Agent. You build INTELLIGENT vacation itineraries.
 
-YOU MUST ALWAYS CALL TOOLS. NEVER respond with just text.
+YOUR WORKFLOW (FOLLOW THIS EXACTLY):
 
-WORKFLOW:
-1. Call GenerateItinerary with trip parameters
-2. Call ProvideItinerary to signal completion
+1. Call AnalyzeAvailableOptions first
+   - Study all restaurants and attractions
+   - Note ratings, locations, types
+   - Plan your distribution strategy
 
-DO NOT explain what you're doing. JUST CALL THE TOOLS."""
+2. Build the itinerary day-by-day using SelectForTimeSlot
+   - For each day, for each time slot (morning/lunch/afternoon/dinner)
+   - Choose items strategically considering:
+     * Variety (don't repeat items on adjacent days)
+     * Quality (prioritize higher-rated options)
+     * Proximity (items near each other on same day)
+     * Logic (museums in morning, restaurants at meal times)
+   - ALWAYS provide clear reasoning for each selection
+
+3. Call ReviewItinerary when complete
+   - Check for repeats
+   - Verify good distribution
+   - Ensure quality
+
+4. If issues found, use SelectForTimeSlot to fix them
+
+5. Call FinalizeItinerary when satisfied
+
+CRITICAL RULES:
+- YOU choose which specific items go in which slots
+- Avoid repeating restaurants/attractions on consecutive days
+- Use higher-rated options when possible
+- Think strategically about geography and timing
+- NEVER just assign items randomly
+
+You are making INTELLIGENT decisions, not following a script."""
 
     # =========================================================================
-    # PUBLIC ENTRY POINT - FIXED TO ALWAYS RETURN A DICT
+    # AGENTIC EXECUTION - LLM drives the process
     # =========================================================================
 
-    def execute(self, params: Any, continuation_message: Optional[Dict[str, Any]] = None, max_turns: int = 5) -> Dict[str, Any]:
+    def execute(self, params: Any, continuation_message: Optional[Dict[str, Any]] = None, max_turns: int = 30) -> Dict[str, Any]:
         """
-        Main execution method - FIXED to always return a valid dict
+        Execute with TRUE agenticness - LLM makes all decisions
         """
         try:
             # Handle both dict and Pydantic model inputs
@@ -117,45 +151,127 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
             else:
                 params_dict = params
             
-            # Store trip data for later use
+            # Store trip data
             self.trip_data = params_dict
             
             # Extract key info
             departure_date = params_dict.get('departure_date', 'unknown')
             return_date = params_dict.get('return_date', 'unknown')
             destination = params_dict.get('destination', 'unknown')
-            restaurants = params_dict.get('restaurants', [])
-            attractions = params_dict.get('attractions', [])
             
-            self.log(f"▶️ Starting itinerary generation for {destination}")
-            self.log(f"📊 Data: {len(restaurants)} restaurants, {len(attractions)} attractions")
+            # Get available options
+            self.available_restaurants = params_dict.get('restaurants', [])[:15]
+            self.available_attractions = params_dict.get('attractions', [])[:15]
             
-            # Generate itinerary directly - no LLM needed!
-            self.log("🎯 Bypassing LLM - generating itinerary directly")
+            self.log(f"▶️ Starting AGENTIC itinerary generation for {destination}")
+            self.log(f"📊 Available: {len(self.available_restaurants)} restaurants, {len(self.available_attractions)} attractions")
             
-            # Call the tool function directly
-            params_obj = GenerateItinerary(
-                departure_date=departure_date,
-                return_date=return_date,
-                destination=destination,
-                num_restaurants=len(restaurants),
-                num_attractions=len(attractions),
-                preferences="balanced schedule"
-            )
+            # Calculate trip details
+            try:
+                start = datetime.strptime(departure_date, '%Y-%m-%d')
+                end = datetime.strptime(return_date, '%Y-%m-%d')
+                num_days = (end - start).days
+            except:
+                num_days = 5
             
-            result = self._tool_generate_itinerary(params_obj)
+            # Initialize empty itinerary structure
+            self.current_itinerary = []
+            for day_num in range(num_days):
+                current_date = (start + timedelta(days=day_num)).strftime('%Y-%m-%d')
+                self.current_itinerary.append({
+                    "day": day_num + 1,
+                    "date": current_date,
+                    "morning": {},
+                    "lunch": {},
+                    "afternoon": {},
+                    "dinner": {}
+                })
             
-            if result.get('success'):
-                self.log("✅ Itinerary generated successfully")
+            self.used_items = set()
+            
+            # Build initial prompt with all context
+            initial_prompt = f"""You are building a {num_days}-day itinerary for {destination}.
+
+AVAILABLE RESTAURANTS ({len(self.available_restaurants)}):
+{self._format_restaurants_list()}
+
+AVAILABLE ATTRACTIONS ({len(self.available_attractions)}):
+{self._format_attractions_list()}
+
+YOUR TASK:
+Build a {num_days}-day itinerary with intelligent selections.
+
+Each day needs:
+- Morning: attraction
+- Lunch: restaurant
+- Afternoon: attraction
+- Dinner: restaurant
+
+Start by calling AnalyzeAvailableOptions to study what's available."""
+
+            # Start LLM conversation
+            chat = self.model.start_chat()
+            response = chat.send_message(initial_prompt)
+            
+            # Run agentic loop
+            for turn in range(max_turns):
+                self.log(f"🔄 Turn {turn + 1}/{max_turns}")
+                
+                # Extract tool calls
+                current_function_calls = []
+                if response.candidates and response.candidates[0].content:
+                    for part in response.candidates[0].content.parts:
+                        if hasattr(part, 'function_call') and part.function_call:
+                            current_function_calls.append(part.function_call)
+                
+                if not current_function_calls:
+                    self.log(f"⚠️ Turn {turn + 1}: LLM stopped without calling tools", "WARN")
+                    break
+                
+                # Execute tools
+                tool_results = []
+                finalized = False
+                
+                for func_call in current_function_calls:
+                    tool_name = func_call.name
+                    tool_args = self._convert_proto_to_dict(func_call.args)
+                    
+                    self.log(f"🛠️ LLM called tool: {tool_name}")
+                    
+                    try:
+                        result = self._execute_tool(tool_name, tool_args)
+                        tool_results.append(self._create_tool_response(func_call, result))
+                        
+                        if tool_name == 'FinalizeItinerary':
+                            finalized = True
+                            self.log("✅ LLM finalized the itinerary")
+                            
+                    except Exception as e:
+                        self.log(f"❌ Tool execution failed: {e}", "ERROR")
+                        error_result = {"success": False, "error": str(e)}
+                        tool_results.append(self._create_tool_response(func_call, error_result))
+                
+                if finalized:
+                    return self._format_itinerary_for_pause()
+                
+                # Send tool results back to LLM
+                tool_response_content = glm.Content(
+                    role="function",
+                    parts=tool_results
+                )
+                response = chat.send_message(tool_response_content)
+            
+            # If we hit max turns, check if itinerary is complete enough
+            if self._is_itinerary_complete():
+                self.log("✅ Itinerary completed (max turns reached)")
                 return self._format_itinerary_for_pause()
-            else:
-                self.log("❌ Itinerary generation failed", "ERROR")
-                return {
-                    "success": False,
-                    "agent": self.name,
-                    "status_code": "STATUS_INCOMPLETE",
-                    "message": "Failed to generate itinerary"
-                }
+            
+            return {
+                "success": False,
+                "agent": self.name,
+                "status_code": "STATUS_INCOMPLETE",
+                "message": "Failed to complete itinerary within iteration limit"
+            }
                 
         except Exception as e:
             self.log(f"❌ Execute error: {str(e)}", "ERROR")
@@ -169,121 +285,159 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
             }
 
     # =========================================================================
-    # TOOL IMPLEMENTATION METHODS
+    # AGENTIC TOOL IMPLEMENTATIONS - Pure LLM decision making
     # =========================================================================
 
-    def _tool_generate_itinerary(self, params: GenerateItinerary) -> Dict[str, Any]:
-        """Generate day-by-day itinerary from trip data"""
-        self.log(f"📅 Generating itinerary for {params.destination}")
+    def _tool_analyze_options(self, params: AnalyzeAvailableOptions) -> Dict[str, Any]:
+        """LLM analyzes available options"""
+        self.log(f"🧠 LLM Analysis: {params.analysis_notes[:100]}...")
         
-        try:
-            # Calculate trip duration
-            start = datetime.strptime(params.departure_date, '%Y-%m-%d')
-            end = datetime.strptime(params.return_date, '%Y-%m-%d')
-            num_days = (end - start).days
-            
-            if num_days <= 0:
-                self.log("⚠️ Invalid dates - using 5 days as default", "WARN")
-                num_days = 5
-            
-            self.log(f"Creating {num_days}-day itinerary...")
-            
-            # Generate itinerary using real trip data
-            itinerary = []
-            restaurants = self.trip_data.get('restaurants', [])[:10]
-            attractions = self.trip_data.get('attractions', [])[:10]
-            
-            # Ensure we have data
-            if not restaurants:
-                self.log("⚠️ No restaurants available", "WARN")
-                restaurants = [{'name': 'Local restaurant', 'formatted_address': 'Downtown', 'rating': 4.0}]
-            
-            if not attractions:
-                self.log("⚠️ No attractions available", "WARN")
-                attractions = [{'name': 'City exploration', 'formatted_address': 'City center', 'rating': 4.5}]
-            
-            for day_num in range(num_days):
-                current_date = (start + timedelta(days=day_num)).strftime('%Y-%m-%d')
-                
-                # Select activities for this day
-                morning_attraction = attractions[day_num % len(attractions)]
-                afternoon_attraction = attractions[(day_num + 1) % len(attractions)]
-                lunch_restaurant = restaurants[day_num % len(restaurants)]
-                dinner_restaurant = restaurants[(day_num + 1) % len(restaurants)]
-                
-                day_plan = {
-                    "day": day_num + 1,
-                    "date": current_date,
-                    "morning": {
-                        "time": "9:00 AM - 12:00 PM",
-                        "activity": morning_attraction.get('name', 'Explore city center'),
-                        "location": morning_attraction.get('formatted_address', 'City center'),
-                        "rating": morning_attraction.get('rating', 'N/A')
-                    },
-                    "lunch": {
-                        "time": "12:30 PM - 2:00 PM",
-                        "restaurant": lunch_restaurant.get('name', 'Local restaurant'),
-                        "address": lunch_restaurant.get('formatted_address', 'Downtown'),
-                        "rating": lunch_restaurant.get('rating', 'N/A')
-                    },
-                    "afternoon": {
-                        "time": "2:30 PM - 6:00 PM",
-                        "activity": afternoon_attraction.get('name', 'Free time / Shopping'),
-                        "location": afternoon_attraction.get('formatted_address', 'Downtown area'),
-                        "rating": afternoon_attraction.get('rating', 'N/A')
-                    },
-                    "dinner": {
-                        "time": "7:00 PM - 9:00 PM",
-                        "restaurant": dinner_restaurant.get('name', 'Dinner spot'),
-                        "address": dinner_restaurant.get('formatted_address', 'City center'),
-                        "rating": dinner_restaurant.get('rating', 'N/A')
-                    }
+        return {
+            "success": True,
+            "message": "Analysis recorded. Now use SelectForTimeSlot to build the itinerary.",
+            "reminder": f"You have {len(self.available_restaurants)} restaurants and {len(self.available_attractions)} attractions to work with."
+        }
+    
+    def _tool_select_for_slot(self, params: SelectForTimeSlot) -> Dict[str, Any]:
+        """LLM selects specific item for specific slot"""
+        day_idx = params.day_number - 1
+        slot = params.time_slot
+        item_id = params.selected_item_id
+        
+        self.log(f"✏️ Day {params.day_number} {slot}: {item_id}")
+        self.log(f"   Reasoning: {params.reasoning[:80]}...")
+        
+        # Find the actual item
+        if slot in ['lunch', 'dinner']:
+            item = self._find_restaurant(item_id)
+            if not item:
+                return {
+                    "success": False,
+                    "error": f"Restaurant '{item_id}' not found in available options"
                 }
-                itinerary.append(day_plan)
             
-            self.current_itinerary = itinerary
-            self.log(f"✅ Created {len(itinerary)}-day itinerary")
+            self.current_itinerary[day_idx][slot] = {
+                "time": "12:30 PM - 2:00 PM" if slot == 'lunch' else "7:00 PM - 9:00 PM",
+                "restaurant": item.get('name'),
+                "address": item.get('formatted_address', 'Address TBD'),
+                "rating": item.get('rating', 'N/A')
+            }
+        else:  # morning or afternoon
+            item = self._find_attraction(item_id)
+            if not item:
+                return {
+                    "success": False,
+                    "error": f"Attraction '{item_id}' not found in available options"
+                }
             
+            self.current_itinerary[day_idx][slot] = {
+                "time": "9:00 AM - 12:00 PM" if slot == 'morning' else "2:30 PM - 6:00 PM",
+                "activity": item.get('name'),
+                "location": item.get('formatted_address', 'Location TBD'),
+                "rating": item.get('rating', 'N/A')
+            }
+        
+        self.used_items.add(item_id)
+        
+        # Check completion
+        is_complete = self._is_itinerary_complete()
+        
+        return {
+            "success": True,
+            "message": f"✅ Selected for Day {params.day_number} {slot}",
+            "items_used": len(self.used_items),
+            "itinerary_complete": is_complete,
+            "next_step": "Call FinalizeItinerary when all slots filled" if is_complete else "Continue selecting for remaining slots"
+        }
+    
+    def _tool_review_itinerary(self, params: ReviewItinerary) -> Dict[str, Any]:
+        """LLM reviews the itinerary quality"""
+        self.log(f"🔍 LLM Review: {params.review_notes[:100]}...")
+        
+        if params.has_issues:
+            self.log(f"⚠️ Issues found: {params.improvement_suggestions}")
             return {
                 "success": True,
-                "itinerary_created": True,
-                "num_days": num_days,
-                "message": f"Generated {num_days}-day itinerary"
+                "has_issues": True,
+                "message": "Issues detected. Use SelectForTimeSlot to make corrections.",
+                "suggestions": params.improvement_suggestions
             }
-            
-        except Exception as e:
-            self.log(f"❌ Error generating itinerary: {str(e)}", "ERROR")
-            return {
-                "success": False,
-                "message": str(e)
-            }
-    
-    def _tool_refine_itinerary(self, params: RefineItinerary) -> Dict[str, Any]:
-        """Refine existing itinerary based on feedback"""
-        self.log(f"🔧 Refining itinerary: {params.refinement_request}")
-        
-        if not self.current_itinerary:
-            return {"success": False, "message": "No itinerary to refine"}
         
         return {
             "success": True,
-            "refinement_applied": True,
-            "message": f"Applied refinement: {params.refinement_request}"
+            "has_issues": False,
+            "message": "Itinerary looks good! Call FinalizeItinerary to complete."
         }
     
-    def _tool_provide_itinerary(self, params: ProvideItinerary) -> Dict[str, Any]:
-        """Provide final itinerary for user approval"""
-        self.log(f"⭐ Providing itinerary for approval: {params.num_days} days")
+    def _tool_finalize_itinerary(self, params: FinalizeItinerary) -> Dict[str, Any]:
+        """LLM signals completion"""
+        self.log(f"⭐ Finalized: {params.final_summary}")
         
         return {
             "success": True,
-            "message": "Itinerary ready for approval",
-            "summary": params.itinerary_summary,
-            "total_days": params.num_days
+            "message": "Itinerary finalized and ready for user",
+            "total_days": params.total_days
         }
 
     # =========================================================================
-    # FORMAT ITINERARY AS BEAUTIFUL TEXT
+    # HELPER METHODS
+    # =========================================================================
+
+    def _format_restaurants_list(self) -> str:
+        """Format restaurant list for LLM"""
+        lines = []
+        for i, r in enumerate(self.available_restaurants, 1):
+            lines.append(f"{i}. {r.get('name')} (★{r.get('rating', 'N/A')}) - {r.get('formatted_address', 'Address N/A')}")
+        return "\n".join(lines)
+    
+    def _format_attractions_list(self) -> str:
+        """Format attraction list for LLM"""
+        lines = []
+        for i, a in enumerate(self.available_attractions, 1):
+            lines.append(f"{i}. {a.get('name')} (★{a.get('rating', 'N/A')}) - {a.get('formatted_address', 'Location N/A')}")
+        return "\n".join(lines)
+    
+    def _find_restaurant(self, item_id: str) -> Optional[Dict]:
+        """Find restaurant by name or ID"""
+        for r in self.available_restaurants:
+            if item_id.lower() in r.get('name', '').lower():
+                return r
+        return None
+    
+    def _find_attraction(self, item_id: str) -> Optional[Dict]:
+        """Find attraction by name or ID"""
+        for a in self.available_attractions:
+            if item_id.lower() in a.get('name', '').lower():
+                return a
+        return None
+    
+    def _is_itinerary_complete(self) -> bool:
+        """Check if all slots are filled"""
+        for day in self.current_itinerary:
+            for slot in ['morning', 'lunch', 'afternoon', 'dinner']:
+                if not day.get(slot):
+                    return False
+                # Check if slot has actual data
+                slot_data = day[slot]
+                if slot in ['lunch', 'dinner']:
+                    if not slot_data.get('restaurant'):
+                        return False
+                else:
+                    if not slot_data.get('activity'):
+                        return False
+        return True
+
+    def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute tool with validation"""
+        schema = self.tool_schemas.get(tool_name)
+        func = self.tool_functions.get(tool_name)
+        if not schema or not func:
+            raise ValueError(f"Unknown tool: {tool_name}")
+        validated_args = schema(**tool_args)
+        return func(validated_args)
+
+    # =========================================================================
+    # FORMAT ITINERARY AS BEAUTIFUL TEXT (same as before)
     # =========================================================================
     
     def _format_itinerary_as_text(self) -> str:
@@ -313,7 +467,6 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
         output.append("## 🎉 Your Adventure")
         output.append("")
         
-        # User's Original Request
         if trip_summary and trip_summary.strip():
             output.append(f"**Your Trip:** {trip_summary}")
             output.append("")
@@ -321,12 +474,10 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
             output.append(f"**Your Trip:** A {num_days}-day vacation to {destination}")
             output.append("")
         
-        # Trip Details
         output.append(f"**📍 Destination:** ***{destination}***")
         output.append(f"**📅 Travel Dates:** {departure_formatted} to {return_formatted} ({num_days} days)")
         output.append("")
         
-        # What's Included
         restaurants_count = len([r for r in self.trip_data.get('restaurants', []) if r])
         attractions_count = len([a for a in self.trip_data.get('attractions', []) if a])
         
@@ -334,19 +485,18 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
         output.append(f"• {num_days} full days of activities")
         output.append(f"• {restaurants_count} curated restaurants")
         output.append(f"• {attractions_count} top attractions")
-        output.append(f"• Balanced daily schedule")
+        output.append(f"• Intelligently planned by AI for optimal experience")
         output.append("")
         
         output.append("---")
         output.append("")
         
-        # FLIGHT SECTION - NEW!
+        # FLIGHT SECTION
         final_flight = self.trip_data.get('final_flight', {})
         if final_flight:
             output.append("## ✈️ Your Flights")
             output.append("")
             
-            # Flight summary
             outbound = final_flight.get('outbound', {})
             return_flight = final_flight.get('return', {})
             
@@ -386,7 +536,6 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
                 output.append(f"• **Stops:** {'Direct flight' if stops == 0 else f'{stops} stop(s)'}")
                 output.append("")
             
-            # Price
             price = final_flight.get('price', 'N/A')
             currency = final_flight.get('currency', 'USD')
             output.append(f"**Total Price:** ${price} {currency}")
@@ -412,40 +561,44 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
             output.append("")
             
             # Morning
-            morning = day['morning']
-            output.append(f"**🌅 Morning ({morning['time']})**")
-            output.append(f"• **Activity:** ***{morning['activity']}***")
-            output.append(f"• **Location:** {morning['location']}")
-            if morning.get('rating') and morning['rating'] != 'N/A':
-                output.append(f"• **Rating:** ⭐ {morning['rating']}/5")
-            output.append("")
+            morning = day.get('morning', {})
+            if morning.get('activity'):
+                output.append(f"**🌅 Morning ({morning.get('time', '9:00 AM - 12:00 PM')})**")
+                output.append(f"• **Activity:** ***{morning['activity']}***")
+                output.append(f"• **Location:** {morning.get('location', 'N/A')}")
+                if morning.get('rating') and morning['rating'] != 'N/A':
+                    output.append(f"• **Rating:** ⭐ {morning['rating']}/5")
+                output.append("")
             
             # Lunch
-            lunch = day['lunch']
-            output.append(f"**🍽️ Lunch ({lunch['time']})**")
-            output.append(f"• **Restaurant:** ***{lunch['restaurant']}***")
-            output.append(f"• **Address:** {lunch['address']}")
-            if lunch.get('rating') and lunch['rating'] != 'N/A':
-                output.append(f"• **Rating:** ⭐ {lunch['rating']}/5")
-            output.append("")
+            lunch = day.get('lunch', {})
+            if lunch.get('restaurant'):
+                output.append(f"**🍽️ Lunch ({lunch.get('time', '12:30 PM - 2:00 PM')})**")
+                output.append(f"• **Restaurant:** ***{lunch['restaurant']}***")
+                output.append(f"• **Address:** {lunch.get('address', 'N/A')}")
+                if lunch.get('rating') and lunch['rating'] != 'N/A':
+                    output.append(f"• **Rating:** ⭐ {lunch['rating']}/5")
+                output.append("")
             
             # Afternoon
-            afternoon = day['afternoon']
-            output.append(f"**☀️ Afternoon ({afternoon['time']})**")
-            output.append(f"• **Activity:** ***{afternoon['activity']}***")
-            output.append(f"• **Location:** {afternoon['location']}")
-            if afternoon.get('rating') and afternoon['rating'] != 'N/A':
-                output.append(f"• **Rating:** ⭐ {afternoon['rating']}/5")
-            output.append("")
+            afternoon = day.get('afternoon', {})
+            if afternoon.get('activity'):
+                output.append(f"**☀️ Afternoon ({afternoon.get('time', '2:30 PM - 6:00 PM')})**")
+                output.append(f"• **Activity:** ***{afternoon['activity']}***")
+                output.append(f"• **Location:** {afternoon.get('location', 'N/A')}")
+                if afternoon.get('rating') and afternoon['rating'] != 'N/A':
+                    output.append(f"• **Rating:** ⭐ {afternoon['rating']}/5")
+                output.append("")
             
             # Dinner
-            dinner = day['dinner']
-            output.append(f"**🌙 Dinner ({dinner['time']})**")
-            output.append(f"• **Restaurant:** ***{dinner['restaurant']}***")
-            output.append(f"• **Address:** {dinner['address']}")
-            if dinner.get('rating') and dinner['rating'] != 'N/A':
-                output.append(f"• **Rating:** ⭐ {dinner['rating']}/5")
-            output.append("")
+            dinner = day.get('dinner', {})
+            if dinner.get('restaurant'):
+                output.append(f"**🌙 Dinner ({dinner.get('time', '7:00 PM - 9:00 PM')})**")
+                output.append(f"• **Restaurant:** ***{dinner['restaurant']}***")
+                output.append(f"• **Address:** {dinner.get('address', 'N/A')}")
+                if dinner.get('rating') and dinner['rating'] != 'N/A':
+                    output.append(f"• **Rating:** ⭐ {dinner['rating']}/5")
+                output.append("")
             
             output.append("---")
             output.append("")
@@ -457,7 +610,6 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
         if final_hotel and final_hotel.get('name'):
             output.append(f"**Hotel:** ***{final_hotel.get('name')}***")
             
-            # Get address - might be in different fields
             address = final_hotel.get('address') or final_hotel.get('formatted_address') or 'Address available at booking'
             output.append(f"**Address:** {address}")
             
@@ -485,7 +637,6 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
         """Format response to pause for human approval"""
         destination = self.trip_data.get('destination', 'Unknown') if self.trip_data else 'Unknown'
         
-        # Generate beautiful formatted text
         formatted_itinerary = self._format_itinerary_as_text()
         
         return {
@@ -496,32 +647,17 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
             "formatted_itinerary": formatted_itinerary,
             "destination": destination,
             "num_days": len(self.current_itinerary) if self.current_itinerary else 0,
-            "message": "Itinerary generated successfully"
-        }
-
-    def _format_final_response(self) -> Dict[str, Any]:
-        """Format final approved itinerary"""
-        formatted_itinerary = self._format_itinerary_as_text()
-        
-        return {
-            "success": True,
-            "agent": self.name,
-            "status_code": SUCCESS,
-            "itinerary": self.current_itinerary,
-            "formatted_itinerary": formatted_itinerary,
-            "message": "Itinerary approved and finalized."
+            "message": "Agentic itinerary generated successfully"
         }
 
     # =========================================================================
-    # HELPER METHODS
+    # UTILITY METHODS
     # =========================================================================
     
     def _convert_proto_to_dict(self, proto_map: Any) -> Dict[str, Any]:
-        """Convert protobuf map to dict"""
         return dict(proto_map)
 
     def _sanitize_property_schema(self, prop_schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Sanitize schema by removing unsupported fields"""
         sanitized = prop_schema.copy()
         
         for field in ['default', 'title', 'examples', 'additionalProperties']:
@@ -550,7 +686,6 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
         return sanitized
 
     def _pydantic_to_function_declaration(self, pydantic_model: Any) -> Dict[str, Any]:
-        """Convert Pydantic model to Gemini function declaration"""
         schema = pydantic_model.model_json_schema()
         name = pydantic_model.__name__
         description = schema.get("description", f"Tool for {name}")
@@ -571,13 +706,11 @@ DO NOT explain what you're doing. JUST CALL THE TOOLS."""
         }
 
     def _create_gemini_tools(self) -> List[Any]:
-        """Create Gemini tools from Pydantic schemas"""
-        tool_list = [GenerateItinerary, RefineItinerary, ProvideItinerary]
+        tool_list = [AnalyzeAvailableOptions, SelectForTimeSlot, ReviewItinerary, FinalizeItinerary]
         tools = []
         for model in tool_list:
             tools.append(genai_types.Tool(function_declarations=[self._pydantic_to_function_declaration(model)]))
         return tools
     
     def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
-        """Create function response for Gemini"""
         return glm.Part(function_response=glm.FunctionResponse(name=function_call.name, response={'result': result}))
