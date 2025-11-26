@@ -252,15 +252,14 @@ class OrchestratorAgent(BaseAgent):
         return {'content': content, 'original_params': initial_params}
 
     # =========================================================================
-    # PHASE 2: AUTOMATED COMPLETION (NO HIL)
+    # PHASE 2: AUTOMATED COMPLETION (NO HIL) - FIXED TO EXTRACT FORMATTED TEXT
     # =========================================================================
 
     def _execute_phase2(self, trip_details: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute Phase 2: Automatically select restaurants, attractions, and generate itinerary.
         
-        No user interaction - system makes intelligent choices based on Phase 1 results.
-        Agents will return HIL_PAUSE but we extract their recommendations automatically.
+        FIXED: Now properly extracts formatted_itinerary text for frontend display.
         """
         self.log("🚀 Phase 2: Auto-completing restaurants, attractions, and itinerary...")
         
@@ -277,7 +276,9 @@ class OrchestratorAgent(BaseAgent):
             restaurant_params = {
                 'city': destination_city,
                 'proximity_location': hotel_location,
-                'max_results': 10
+                'max_results': 10,
+                'departure_date': trip_details.get('departure_date'),
+                'return_date': trip_details.get('return_date')   
             }
             restaurant_result = self.restaurant_agent.execute(restaurant_params)
             
@@ -297,7 +298,9 @@ class OrchestratorAgent(BaseAgent):
             attraction_params = {
                 'city': destination_city,
                 'proximity_location': hotel_location,
-                'max_results': 10
+                'max_results': 10,
+                'departure_date': trip_details.get('departure_date'),
+                'return_date': trip_details.get('return_date')
             }
             attraction_result = self.attractions_agent.execute(attraction_params)
             
@@ -327,49 +330,39 @@ class OrchestratorAgent(BaseAgent):
                 'return_date': trip_details.get('return_date'),
                 'destination': destination_city,
                 'restaurants': restaurants,
-                'attractions': attractions
+                'attractions': attractions,
+                'final_hotel': final_hotel,
+                'final_flight': final_flight 
             }
             itinerary_result = self.itinerary_agent.execute(itinerary_params)
             
             # DEBUG: Log what we received
             self.log(f"🔍 DEBUG: Itinerary result keys: {list(itinerary_result.keys())}")
-            self.log(f"🔍 DEBUG: Status code: {itinerary_result.get('status_code')}")
+            self.log(f"🔍 DEBUG: Has formatted_itinerary: {'formatted_itinerary' in itinerary_result}")
             
-            # Extract itinerary - handle multiple response structures
-            if itinerary_result.get('status_code') == 'HIL_PAUSE_REQUIRED':
-                # ItineraryAgent returned HIL_PAUSE with recommendations
-                itinerary_data = (
-                    itinerary_result.get('itinerary') or 
-                    itinerary_result.get('recommended_itinerary') or 
-                    itinerary_result.get('recommended_itineraries') or
-                    []
-                )
-                self.log(f"🔍 DEBUG: Extracted itinerary data: {len(itinerary_data) if isinstance(itinerary_data, list) else 'not a list'}")
-                
-                self.all_results['itinerary'] = {
-                    'success': True,
-                    'itinerary': itinerary_data,
-                    'summary': itinerary_result.get('recommendation_summary', '')
-                }
-                self.log(f"✅ Itinerary extracted: {len(itinerary_data) if isinstance(itinerary_data, list) else 0} days")
-            elif itinerary_result.get('success'):
-                # ItineraryAgent returned SUCCESS
-                self.all_results['itinerary'] = itinerary_result
-                self.log("✅ Itinerary generated")
-            else:
-                # Fallback - log what we got
-                self.log(f"⚠️ Unexpected itinerary result: {itinerary_result}", "WARN")
-                self.all_results['itinerary'] = {
-                    'success': False,
-                    'itinerary': [],
-                    'summary': 'Itinerary generation incomplete'
-                }
+            # CRITICAL FIX: Extract the formatted_itinerary text
+            formatted_text = itinerary_result.get('formatted_itinerary', '')
+            if not formatted_text:
+                self.log("⚠️ WARNING: No formatted_itinerary found in result!", "WARN")
+                formatted_text = "Itinerary generation incomplete"
+            
+            self.log(f"✅ Extracted formatted itinerary: {len(formatted_text)} characters")
+            
+            # Store both the itinerary data AND the formatted text
+            self.all_results['itinerary'] = {
+                'success': True,
+                'itinerary': itinerary_result.get('itinerary', []),
+                'formatted_itinerary': formatted_text,  # THIS IS THE KEY LINE!
+                'summary': itinerary_result.get('recommendation_summary', '')
+            }
             
             self.log("✅ Phase 2 complete!")
             return {"status": "success"}
             
         except Exception as e:
             self.log(f"❌ Phase 2 error: {str(e)}", "ERROR")
+            import traceback
+            traceback.print_exc()
             return {"status": "error", "error": str(e)}
 
     # =========================================================================
@@ -484,6 +477,8 @@ class OrchestratorAgent(BaseAgent):
         TWO-PHASE LOGIC:
         1. If resuming FlightAgent → Complete flight, then start HotelAgent
         2. If resuming HotelAgent → Complete hotel, then execute Phase 2
+        
+        FIXED: Now properly passes formatted_itinerary to frontend as 'data'
         """
         self.log("▶️ Resuming TWO-PHASE orchestration...")
         
@@ -558,9 +553,19 @@ class OrchestratorAgent(BaseAgent):
                 phase2_result = self._execute_phase2(trip_details)
                 
                 if phase2_result.get('status') == 'success':
+                    # CRITICAL FIX: Extract formatted itinerary for frontend
+                    formatted_itinerary = self.all_results.get('itinerary', {}).get('formatted_itinerary', '')
+                    
+                    self.log(f"📤 Sending formatted itinerary to frontend: {len(formatted_itinerary)} characters")
+                    
+                    if not formatted_itinerary:
+                        self.log("⚠️ WARNING: Empty formatted itinerary!", "ERROR")
+                        formatted_itinerary = "Error: Itinerary generation failed"
+                    
                     return {
                         "status": "complete",
                         "success": True,
+                        "data": formatted_itinerary,  # THIS IS WHAT THE FRONTEND NEEDS!
                         "summary": "Complete vacation plan ready!",
                         "all_results": self.all_results
                     }

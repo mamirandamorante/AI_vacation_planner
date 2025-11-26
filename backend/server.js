@@ -73,149 +73,188 @@ if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your-gemini-ap
 // =============================================================================
 
 /**
- * FORMAT COMPLETE VACATION PLAN
+ * FORMAT COMPLETE VACATION PLAN (FALLBACK)
  * 
- * Takes the results from the Python orchestrator and formats them into
- * a user-friendly markdown response.
+ * This is now a FALLBACK formatter in case the Python ItineraryAgent
+ * doesn't provide formatted output.
  * 
- * This function only handles PRESENTATION, not decision-making or parsing.
- * All business logic and AI decisions happen in the Python agents layer.
+ * Ideally, the Python ItineraryAgent creates the beautiful formatted text,
+ * and this function is rarely used.
  * 
- * @param {Object} results - Results from the orchestrator containing flight, hotel, restaurant, attraction, and itinerary data
- * @param {Object} travelDetails - Basic trip details for the header (origin, destination, dates)
+ * @param {Object} results - Results from the orchestrator
+ * @param {Object} travelDetails - Basic trip details
  * @returns {string} Formatted markdown string
  */
 function formatCompleteVacationPlan(results, travelDetails) {
-  let plan = `# 🌍 Your Complete Vacation Plan\n\n`;
+  let plan = `# ✨ Your Dream Vacation Awaits!\n\n`;
   
-  // Add trip header if we have the basic details
+  // EXCITING TRIP HEADER
   if (travelDetails) {
+    plan += `## 🌍 Your Adventure\n\n`;
+    
     if (travelDetails.origin && travelDetails.destination) {
-      plan += `**Trip:** ${travelDetails.origin} → ${travelDetails.destination}\n`;
+      plan += `**Destination:** ${travelDetails.destination} 🎯\n`;
+      plan += `**Departing from:** ${travelDetails.origin}\n`;
     }
+    
     if (travelDetails.departure_date && travelDetails.return_date) {
-      plan += `**Dates:** ${travelDetails.departure_date} to ${travelDetails.return_date}\n`;
+      const departDate = new Date(travelDetails.departure_date);
+      const returnDate = new Date(travelDetails.return_date);
+      const tripDays = Math.ceil((returnDate - departDate) / (1000 * 60 * 60 * 24));
+      
+      plan += `**When:** ${departDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}\n`;
+      plan += `**Duration:** ${tripDays} unforgettable days\n`;
     }
+    
     if (travelDetails.passengers) {
-      plan += `**Travelers:** ${travelDetails.passengers} people\n`;
+      plan += `**Travelers:** ${travelDetails.passengers} ${travelDetails.passengers === 1 ? 'adventurer' : 'adventurers'}\n`;
     }
+    
     if (travelDetails.budget) {
       plan += `**Budget:** €${travelDetails.budget}\n`;
     }
+    
     plan += `\n---\n\n`;
   }
   
   // FLIGHTS SECTION
-  // Display the user's selected flight from two-phase HIL
-  plan += `## ✈️ Your Flight\n\n`;
+  plan += `## ✈️ Your Journey Begins\n\n`;
   const finalFlight = results.final_flight;
   if (finalFlight) {
-    plan += `**${finalFlight.outbound.airline} ${finalFlight.outbound.flight}** - $${finalFlight.price} ${finalFlight.currency}\n\n`;
-    plan += `**Outbound:**\n`;
-    plan += `- ${finalFlight.outbound.from} → ${finalFlight.outbound.to}\n`;
-    plan += `- Departs: ${new Date(finalFlight.outbound.departure).toLocaleString()}\n`;
-    plan += `- Arrives: ${new Date(finalFlight.outbound.arrival).toLocaleString()}\n`;
-    plan += `- Duration: ${finalFlight.outbound.duration} | Stops: ${finalFlight.outbound.stops}\n\n`;
+    plan += `Get ready to soar! Your flight is all set:\n\n`;
+    plan += `**${finalFlight.outbound.airline} ${finalFlight.outbound.flight}** • $${finalFlight.price} ${finalFlight.currency}\n\n`;
+    
+    plan += `**🛫 Outbound Flight:**\n`;
+    plan += `• Departs ${finalFlight.outbound.from} → ${finalFlight.outbound.to}\n`;
+    plan += `• ${new Date(finalFlight.outbound.departure).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}\n`;
+    plan += `• Arrives: ${new Date(finalFlight.outbound.arrival).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}\n`;
+    plan += `• Flight time: ${finalFlight.outbound.duration} • ${finalFlight.outbound.stops === 0 ? 'Direct flight!' : `${finalFlight.outbound.stops} stop(s)`}\n\n`;
     
     if (finalFlight.return) {
-      plan += `**Return:**\n`;
-      plan += `- ${finalFlight.return.from} → ${finalFlight.return.to}\n`;
-      plan += `- Departs: ${new Date(finalFlight.return.departure).toLocaleString()}\n`;
-      plan += `- Arrives: ${new Date(finalFlight.return.arrival).toLocaleString()}\n`;
-      plan += `- Duration: ${finalFlight.return.duration} | Stops: ${finalFlight.return.stops}\n\n`;
+      plan += `**🛬 Return Flight:**\n`;
+      plan += `• Departs ${finalFlight.return.from} → ${finalFlight.return.to}\n`;
+      plan += `• ${new Date(finalFlight.return.departure).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}\n`;
+      plan += `• Arrives: ${new Date(finalFlight.return.arrival).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}\n`;
+      plan += `• Flight time: ${finalFlight.return.duration} • ${finalFlight.return.stops === 0 ? 'Direct flight!' : `${finalFlight.return.stops} stop(s)`}\n\n`;
     }
   } else {
-    plan += `Flight information unavailable.\n\n`;
+    plan += `Your flight details will be confirmed shortly.\n\n`;
   }
   
   plan += `---\n\n`;
   
-  // HOTELS SECTION
-  // Display the user's selected hotel from two-phase HIL
-  plan += `## 🏨 Your Hotel\n\n`;
+  // HOTEL SECTION
+  plan += `## 🏨 Your Home Away From Home\n\n`;
   const finalHotel = results.final_hotel;
   if (finalHotel) {
-    plan += `**${finalHotel.name}** ${'⭐'.repeat(Math.min(finalHotel.rating || 0, 5))}\n`;
-    plan += `- $${finalHotel.price}/night\n`;
-    plan += `- Room: ${finalHotel.room_type}\n\n`;
+    plan += `Welcome to your perfect retreat:\n\n`;
+    plan += `### ${finalHotel.name} ${'⭐'.repeat(Math.round(finalHotel.rating || 3))}\n\n`;
+    plan += `**Rate:** $${finalHotel.price}/night\n\n`;
+    plan += `**Your Room:**\n`;
+    plan += `${finalHotel.room_type}\n\n`;
   } else {
-    plan += `Hotel information unavailable.\n\n`;
+    plan += `Your accommodation will be confirmed shortly.\n\n`;
   }
   
   plan += `---\n\n`;
   
   // RESTAURANTS SECTION
-  // Display auto-selected restaurants from Phase 2
-  plan += `## 🍽️ Recommended Restaurants\n\n`;
+  plan += `## 🍽️ Culinary Adventures Await\n\n`;
+  plan += `We've handpicked these exceptional dining spots for you:\n\n`;
   const finalRestaurant = results.final_restaurant;
   if (finalRestaurant && finalRestaurant.recommended_restaurants) {
-    finalRestaurant.recommended_restaurants.slice(0, 5).forEach((rest, i) => {
-      plan += `**${i + 1}. ${rest.name}** ⭐ ${rest.rating || 'N/A'}\n`;
-      if (rest.cuisine) plan += `- Cuisine: ${rest.cuisine}\n`;
-      if (rest.address) plan += `- ${rest.address}\n`;
-      plan += `\n`;
+    finalRestaurant.recommended_restaurants.forEach((rest, i) => {
+      plan += `**${i + 1}. ${rest.name}** ${'⭐'.repeat(Math.round(rest.rating || 4))}\n`;
+      if (rest.cuisine) plan += `   *${rest.cuisine}*\n`;
+      if (rest.price_level) {
+        const priceSymbols = '€'.repeat(rest.price_level);
+        plan += `   ${priceSymbols} • `;
+      }
+      if (rest.address) plan += `${rest.address}`;
+      plan += `\n\n`;
     });
   } else {
-    plan += `Restaurant recommendations unavailable.\n\n`;
+    plan += `Restaurant recommendations will be added to your plan.\n\n`;
   }
   
   plan += `---\n\n`;
   
   // ATTRACTIONS SECTION
-  // Display auto-selected attractions from Phase 2
-  plan += `## 🎭 Things to Do\n\n`;
+  plan += `## 🎭 Discover & Explore\n\n`;
+  plan += `These amazing experiences are waiting for you:\n\n`;
   const finalAttraction = results.final_attraction;
   if (finalAttraction && finalAttraction.recommended_attractions) {
-    finalAttraction.recommended_attractions.slice(0, 5).forEach((attr, i) => {
-      plan += `**${i + 1}. ${attr.name}** ⭐ ${attr.rating || 'N/A'}\n`;
-      if (attr.type) plan += `- Type: ${attr.type}\n`;
-      if (attr.address) plan += `- ${attr.address}\n`;
+    finalAttraction.recommended_attractions.forEach((attr, i) => {
+      plan += `**${i + 1}. ${attr.name}** ${'⭐'.repeat(Math.round(attr.rating || 4))}\n`;
+      if (attr.type) plan += `   🏷️ ${attr.type}\n`;
+      if (attr.address) plan += `   📍 ${attr.address}\n`;
       plan += `\n`;
     });
   } else {
-    plan += `Attraction recommendations unavailable.\n\n`;
+    plan += `Your personalized attraction list is being prepared.\n\n`;
   }
   
   plan += `---\n\n`;
   
   // ITINERARY SECTION
-  // Display day-by-day plan created by the ItineraryAgent
-  plan += `## 📅 Day-by-Day Itinerary\n\n`;
+  plan += `## 📅 Your Day-by-Day Adventure\n\n`;
+  plan += `*Here's your personalized itinerary - each day crafted for maximum enjoyment!*\n\n`;
+  
   const itineraryData = results.itinerary;
   if (itineraryData?.success && itineraryData.itinerary?.length > 0) {
-    itineraryData.itinerary.forEach((day) => {
-      plan += `### Day ${day.day} - ${day.date}\n\n`;
+    itineraryData.itinerary.forEach((day, idx) => {
+      const dayNames = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh'];
+      const dayName = dayNames[idx] || `Day ${day.day}`;
       
-      // Morning activity
+      plan += `### ${dayName} Day • ${new Date(day.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}\n\n`;
+      
+      // Morning
       if (day.morning?.activity) {
-        plan += `**Morning:** ${day.morning.activity}\n`;
-        if (day.morning.location) plan += `📍 ${day.morning.location}\n\n`;
+        plan += `🌅 **Morning:** Start your day at ${day.morning.activity}\n`;
+        if (day.morning.location) {
+          plan += `   📍 *${day.morning.location}*\n`;
+        }
+        plan += `\n`;
       }
       
       // Lunch
       if (day.lunch?.restaurant) {
-        plan += `**Lunch:** ${day.lunch.restaurant}\n`;
-        if (day.lunch.cuisine) plan += `🍽️ ${day.lunch.cuisine}\n\n`;
+        plan += `🍴 **Lunch:** Savor the flavors at ${day.lunch.restaurant}\n`;
+        if (day.lunch.cuisine) {
+          plan += `   *Enjoy authentic ${day.lunch.cuisine}*\n`;
+        }
+        plan += `\n`;
       }
       
-      // Afternoon activity
+      // Afternoon
       if (day.afternoon?.activity) {
-        plan += `**Afternoon:** ${day.afternoon.activity}\n`;
-        if (day.afternoon.location) plan += `📍 ${day.afternoon.location}\n\n`;
+        plan += `☀️ **Afternoon:** Continue your adventure at ${day.afternoon.activity}\n`;
+        if (day.afternoon.location) {
+          plan += `   📍 *${day.afternoon.location}*\n`;
+        }
+        plan += `\n`;
       }
       
       // Dinner
       if (day.dinner?.restaurant) {
-        plan += `**Dinner:** ${day.dinner.restaurant}\n`;
-        if (day.dinner.cuisine) plan += `🍽️ ${day.dinner.cuisine}\n\n`;
+        plan += `🌙 **Dinner:** End your day with a delightful meal at ${day.dinner.restaurant}\n`;
+        if (day.dinner.cuisine) {
+          plan += `   *Experience exquisite ${day.dinner.cuisine}*\n`;
+        }
+        plan += `\n`;
       }
+      
+      plan += `\n`;
     });
   } else {
-    plan += `Itinerary will be generated based on your preferences.\n\n`;
+    plan += `Your customized daily itinerary will be ready soon!\n\n`;
   }
   
   plan += `---\n\n`;
-  plan += `*Powered by AI Multi-Agent System*`;
+  plan += `### 🎉 Ready for Adventure?\n\n`;
+  plan += `Your vacation plan is all set! Get ready to create unforgettable memories.\n\n`;
+  plan += `*Bon voyage! Safe travels and enjoy every moment!* ✈️🌍✨\n`;
+  
   return plan;
 }
 
@@ -306,23 +345,32 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
       });
     }
     
-    // Case 2: Orchestration complete
+    // Case 2: Orchestration complete - FIXED TO USE PYTHON'S FORMATTED TEXT
     if (orchestratorData.status === 'complete' && orchestratorData.success) {
       console.log('✅ Plan generated successfully!');
       
-      const travelDetails = orchestratorData.travel_details || {};
-      const formattedPlan = formatCompleteVacationPlan(
-        orchestratorData.all_results || {}, 
-        travelDetails
-      );
+      // CRITICAL FIX: Use the formatted_itinerary from Python if available
+      // The ItineraryAgent already created a beautiful formatted text
+      let finalData = orchestratorData.data;
+      
+      if (!finalData || finalData.trim() === '') {
+        console.log('⚠️ No formatted data from Python, using fallback formatter');
+        const travelDetails = orchestratorData.travel_details || {};
+        finalData = formatCompleteVacationPlan(
+          orchestratorData.all_results || {}, 
+          travelDetails
+        );
+      } else {
+        console.log(`✅ Using formatted itinerary from Python (${finalData.length} chars)`);
+      }
       
       return res.json({
         status: 'complete',
         success: true,
-        data: formattedPlan,
+        data: finalData,
         message: 'Vacation plan ready',
         raw_results: orchestratorData.all_results,
-        travel_details: travelDetails
+        travel_details: orchestratorData.travel_details || {}
       });
     }
     
@@ -358,22 +406,14 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
 });
 
 /**
- * RESUME VACATION PLANNING ENDPOINT - NEW FOR PRODUCTION HIL
+ * RESUME VACATION PLANNING ENDPOINT - PRODUCTION HIL
  * 
  * This endpoint handles user responses after an HIL pause.
- * 
- * The user has made a choice (e.g., selected a flight) or provided
- * refinement feedback (e.g., "too expensive"), and we need to resume
- * the orchestration process.
  * 
  * @route POST /api/resume
  * @body {string} session_id - Session ID from the pause response
  * @body {Object} user_decision - User's decision
- *   - {status: "FINAL_CHOICE", flight_id: "123"} OR
- *   - {status: "REFINE_SEARCH", feedback: "Too expensive..."}
- * @returns {Object} Same as /api/plan-vacation-agents:
- *   - May pause again for next agent
- *   - Or return complete plan
+ * @returns {Object} Same as /api/plan-vacation-agents
  */
 app.post('/api/resume', async (req, res) => {
   try {
@@ -423,23 +463,31 @@ app.post('/api/resume', async (req, res) => {
       });
     }
     
-    // Case 2: Orchestration complete
+    // Case 2: Orchestration complete - FIXED TO USE PYTHON'S FORMATTED TEXT
     if (resumeData.status === 'complete' && resumeData.success) {
       console.log('✅ Orchestration completed after resume!');
       
-      const travelDetails = resumeData.travel_details || {};
-      const formattedPlan = formatCompleteVacationPlan(
-        resumeData.all_results || {}, 
-        travelDetails
-      );
+      // CRITICAL FIX: Use the formatted_itinerary from Python if available
+      let finalData = resumeData.data;
+      
+      if (!finalData || finalData.trim() === '') {
+        console.log('⚠️ No formatted data from Python, using fallback formatter');
+        const travelDetails = resumeData.travel_details || {};
+        finalData = formatCompleteVacationPlan(
+          resumeData.all_results || {}, 
+          travelDetails
+        );
+      } else {
+        console.log(`✅ Using formatted itinerary from Python (${finalData.length} chars)`);
+      }
       
       return res.json({
         status: 'complete',
         success: true,
-        data: formattedPlan,
+        data: finalData,
         message: 'Vacation plan ready',
         raw_results: resumeData.all_results,
-        travel_details: travelDetails
+        travel_details: resumeData.travel_details || {}
       });
     }
     

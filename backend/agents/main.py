@@ -148,6 +148,7 @@ def orchestrate_vacation():
     {
         "status": "complete",
         "success": true,
+        "data": "formatted itinerary text...",
         "summary": "...",
         "all_results": {...}
     }
@@ -191,11 +192,15 @@ def orchestrate_vacation():
                 "turn": result.get('turn', 1)
             }), 200
         
-        # Orchestrator completed successfully
+        # Orchestrator completed successfully - FIXED: Forward 'data' field!
         elif result.get('success'):
+            formatted_data = result.get('data', '')
+            print(f"[API] ✅ Complete! Forwarding formatted data: {len(formatted_data)} chars")
+            
             return jsonify({
                 "status": "complete",
                 "success": True,
+                "data": formatted_data,  # CRITICAL FIX: Include the formatted itinerary!
                 "summary": result.get('summary', ''),
                 "all_results": result.get('all_results', {})
             }), 200
@@ -277,14 +282,18 @@ def resume_orchestration():
                 "turn": result.get('turn', 1)
             }), 200
         
-        # Completed successfully
+        # Completed successfully - FIXED: Forward 'data' field!
         elif result.get('success'):
             # Clean up session
             delete_session(session_id)
             
+            formatted_data = result.get('data', '')
+            print(f"[API] ✅ Resume complete! Forwarding formatted data: {len(formatted_data)} chars")
+            
             return jsonify({
                 "status": "complete",
                 "success": True,
+                "data": formatted_data,  # CRITICAL FIX: Include the formatted itinerary!
                 "summary": result.get('summary', ''),
                 "all_results": result.get('all_results', {})
             }), 200
