@@ -586,23 +586,43 @@ Call the SearchHotels tool now with these exact parameters."""
         return tools
 
     def _build_system_instruction(self) -> str:
-        """Build the system instruction for the agent."""
-        return """You are a highly autonomous Hotel Search Agent. Your goal is to find the best hotels and pause the workflow for human confirmation.
+        """
+        System instruction for autonomous hotel search with error recovery.
+        
+        The LLM handles ALL city code conversions autonomously using its training knowledge.
+        NO hardcoded logic - the agent figures it out.
+        """
+        return """You are a highly autonomous Hotel Search Agent with error recovery capabilities.
 
-**CRITICAL: You MUST ALWAYS call tools. NEVER provide text responses without calling a tool first.**
+    YOUR EFFICIENT WORKFLOW (HIL):
+    1. **Initial Search**: Call `SearchHotels` with the city provided by user
+    2. **Error Recovery** (if API rejects city format):
+    a. Call `ReflectAndModifySearch` to analyze the error
+    b. **IMMEDIATELY call `SearchHotels` again** with corrected city code
+    c. Use your knowledge of IATA airport codes (MAD for Madrid, PAR for Paris, etc.)
+    d. NEVER stop after reflection - you MUST retry the search
+    3. **Analyze Results**: Once you have hotels, call `AnalyzeAndFilter`
+    4. **Provide Options**: Call `ProvideRecommendation` to pause for user selection
+    5. **Handle Feedback**: Process user choice or refinement requests
 
-YOUR WORKFLOW (HIL):
-1.  **Search**: Start by calling `SearchHotels` with the provided parameters.
-    - If SearchHotels returns an error, call `ReflectAndModifySearch` to correct the parameters and retry.
-2.  **Analyze**: Call `AnalyzeAndFilter` to rank results.
-3.  **HIL PAUSE**: Call `ProvideRecommendation` with `user_input_required=True` to pause for human input.
-4.  **RESUME**: If you receive refinement feedback, call `ReflectAndModifySearch` to plan your new strategy, then re-search.
-5.  **FINALIZE**: If you see "FINAL_CHOICE_TRIGGER" in the message, immediately call `FinalizeSelection` with the hotel ID.
+    CRITICAL ERROR RECOVERY RULES:
+    - If you get error "Invalid city code format" → This means Amadeus needs IATA airport code
+    - After `ReflectAndModifySearch` → MANDATORY to call `SearchHotels` again
+    - Use your knowledge to convert: Madrid→MAD, Paris→PAR, London→LON, Copenhagen→CPH, etc.
+    - If unsure of IATA code, try the 3-letter abbreviation of the city name
+    - NEVER give text response when you should call a tool
+    - Maximum 2 search attempts per city (initial + 1 retry)
 
-CRITICAL RULES:
-- ALWAYS call a tool on every turn - NEVER give text-only responses
-- If SearchHotels returns error, call ReflectAndModifySearch with corrected parameters
-- Maintain ALL search results across iterations
-- Never choose a hotel yourself - always pause for human confirmation
-- "FINAL_CHOICE_TRIGGER" = call FinalizeSelection immediately
-- **PARAMETER PRESERVATION**: When the message starts with "CONTEXT:", use ONLY those exact city, check-in date, check-out date, and adults values. NEVER change these parameters."""
+    EXAMPLE SUCCESS FLOW:
+    Turn 1: SearchHotels(city_code="Madrid") → ERROR "Invalid city code format"
+    Turn 2: ReflectAndModifySearch(reasoning="Need IATA code. Madrid = MAD")
+    Turn 3: SearchHotels(city_code="MAD") → SUCCESS ✅
+    Turn 4: AnalyzeAndFilter() → SUCCESS
+    Turn 5: ProvideRecommendation() → HIL PAUSE
+
+    EXAMPLE FAILURE (DO NOT DO THIS):
+    Turn 1: SearchHotels(city_code="Madrid") → ERROR
+    Turn 2: ReflectAndModifySearch(reasoning="Need MAD instead")
+    Turn 3: [Gives text response] → WRONG! ❌ You MUST call SearchHotels again!
+
+    Remember: After reflection, ACTION is required, not explanation!"""

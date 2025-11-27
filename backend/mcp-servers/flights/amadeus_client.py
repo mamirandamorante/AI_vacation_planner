@@ -11,6 +11,7 @@ import certifi
 from amadeus import Client, ResponseError
 from typing import Dict, List, Optional
 from datetime import datetime
+from typing import Optional
 
 
 class AmadeusFlightClient:
@@ -41,7 +42,7 @@ class AmadeusFlightClient:
             client_id=api_key,
             client_secret=api_secret,
             hostname='test',
-            ssl=ssl_context
+            ssl=ssl_context  # Add SSL context to client
         )
         
         print("[AmadeusClient] ✅ Initialized successfully")
@@ -72,6 +73,7 @@ class AmadeusFlightClient:
         try:
             print(f"[AmadeusClient] Searching flights: {origin} → {destination} on {departure_date}")
             
+            # Build API request parameters
             search_params = {
                 'originLocationCode': origin.upper(),
                 'destinationLocationCode': destination.upper(),
@@ -81,10 +83,14 @@ class AmadeusFlightClient:
                 'currencyCode': 'USD'
             }
             
+            # Add return date if provided (round trip)
             if return_date:
                 search_params['returnDate'] = return_date
             
+            # Call Amadeus API
             response = self.client.shopping.flight_offers_search.get(**search_params)
+            
+            # Extract and format flight offers
             flight_offers = response.data
             print(f"[AmadeusClient] Found {len(flight_offers)} flight offers")
             
@@ -96,6 +102,7 @@ class AmadeusFlightClient:
             return formatted_flights
             
         except ResponseError as error:
+            # Log detailed error information for debugging
             print("[AmadeusClient] ERROR repr:", repr(error))
             print("[AmadeusClient] ERROR args:", getattr(error, "args", None))
             print("[AmadeusClient] ERROR dict:", getattr(error, "__dict__", None))
@@ -118,13 +125,21 @@ class AmadeusFlightClient:
     def _format_flight_offer(self, offer: Dict) -> Dict:
         """
         Format Amadeus flight offer into simplified structure
+        
+        Converts complex Amadeus response into clean, easy-to-use format
         """
         try:
+            # Extract price
             price = float(offer['price']['total'])
             currency = offer['price']['currency']
+            
+            # Extract itineraries (outbound and return)
             itineraries = offer['itineraries']
+            
+            # Format outbound flight
             outbound = self._format_itinerary(itineraries[0])
             
+            # Format return flight if exists
             return_flight = None
             if len(itineraries) > 1:
                 return_flight = self._format_itinerary(itineraries[1])
@@ -151,13 +166,20 @@ class AmadeusFlightClient:
     def _format_itinerary(self, itinerary: Dict) -> Dict:
         """
         Format a single itinerary (outbound or return)
+        
+        Extracts key information from multi-segment journey
         """
         segments = itinerary['segments']
+        
+        # Get first and last segment for overall journey
         first_segment = segments[0]
         last_segment = segments[-1]
         
+        # Extract airline info
         carrier_code = first_segment.get('carrierCode', 'N/A')
         flight_number = first_segment.get('number', 'N/A')
+        
+        # Calculate stops
         stops = len(segments) - 1
         
         return {

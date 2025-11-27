@@ -269,35 +269,43 @@ function formatCompleteVacationPlan(results, travelDetails) {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Vacation Planner API (Production HIL)',
+    message: 'Vacation Planner API (Production HIL + Clarification)',
     timestamp: new Date().toISOString()
   });
 });
 
 /**
- * PLAN VACATION WITH AGENTS ENDPOINT - PRODUCTION HIL VERSION
+ * PLAN VACATION WITH AGENTS ENDPOINT - PRODUCTION HIL VERSION + STEP 3 CLARIFICATION
  * 
- * This endpoint now supports Human-in-the-Loop (HIL) interactions:
+ * This endpoint now supports:
+ * 1. Human-in-the-Loop (HIL) interactions
+ * 2. Intelligent clarification requests (STEP 3)
  * 
  * Flow:
  * 1. User sends prompt
  * 2. Backend forwards to Python orchestrator
- * 3. Orchestrator may PAUSE and return recommendations
- * 4. Frontend displays recommendations
- * 5. User makes choice
- * 6. Frontend calls /api/resume with choice
- * 7. Process continues until complete
+ * 3a. Orchestrator may request CLARIFICATION (STEP 3 NEW)
+ *     → Frontend displays questions
+ *     → User provides answers
+ *     → Call this endpoint again with clarification_response
+ * 3b. Orchestrator may PAUSE for HIL and return recommendations
+ *     → Frontend displays recommendations
+ *     → User makes choice
+ *     → Frontend calls /api/resume with choice
+ * 4. Process continues until complete
  * 
  * @route POST /api/plan-vacation-agents
  * @body {string} prompt - The raw user input
+ * @body {string} clarification_response - (STEP 3) User's answers to clarification questions
  * @returns {Object} Either:
+ *   - {status: "clarification_needed", questions: [...]}  (STEP 3 NEW)
  *   - {status: "awaiting_user_input", session_id, recommendations, ...}
  *   - {status: "complete", success: true, data: formatted_plan}
  *   - {status: "error", success: false, error: message}
  */
 app.post('/api/plan-vacation-agents', async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, clarification_response } = req.body;  // STEP 3: Added clarification_response
     
     // Validate that we received a prompt
     if (!prompt || typeof prompt !== 'string' || prompt.trim() === '') {
@@ -310,20 +318,48 @@ app.post('/api/plan-vacation-agents', async (req, res) => {
     
     console.log('📝 User:', req.user?.email);
     console.log('📝 Prompt:', prompt);
+    if (clarification_response) {
+      console.log('💬 Clarification response:', clarification_response);  // STEP 3
+    }
     
     const pythonApiUrl = process.env.PYTHON_AGENT_API_URL || 'http://localhost:8081';
     
     console.log('🤖 Sending request to Python orchestrator...');
     
+    // STEP 3: Include clarification_response if provided
+    const requestBody = {
+      user_prompt: prompt
+    };
+    
+    if (clarification_response) {
+      requestBody.clarification_response = clarification_response;
+    }
+    
     const orchestratorResponse = await fetch(`${pythonApiUrl}/api/agents/orchestrate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_prompt: prompt
-      })
+      body: JSON.stringify(requestBody)
     });
     
     const orchestratorData = await orchestratorResponse.json();
+    
+    // ==========================================================================
+    // STEP 3: Handle clarification needed FIRST (before HIL pause)
+    // ==========================================================================
+    
+    // STEP 3 NEW: Case 0: Agent needs clarification from user
+    if (orchestratorData.status === 'clarification_needed') {
+      console.log('❓ Agent needs clarification:', orchestratorData.questions?.length, 'questions');
+      
+      // Forward clarification request to frontend
+      return res.json({
+        status: 'clarification_needed',
+        questions: orchestratorData.questions || [],
+        reasoning: orchestratorData.reasoning || '',
+        missing_required: orchestratorData.missing_required || [],
+        missing_optional: orchestratorData.missing_optional || []
+      });
+    }
     
     // ==========================================================================
     // PRODUCTION HIL: Handle different response statuses
@@ -525,9 +561,10 @@ app.post('/api/resume', async (req, res) => {
 // =============================================================================
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Vacation Planner API (Production HIL)`);
+  console.log(`\n🚀 Vacation Planner API (Production HIL + Clarification)`);
   console.log(`📍 http://localhost:${PORT}`);
   console.log(`🔐 Auth: Email-based`);
   console.log(`🤖 Agentic Mode: Enabled`);
-  console.log(`⏸️  HIL Support: Production-ready pause/resume\n`);
+  console.log(`⏸️  HIL Support: Production-ready pause/resume`);
+  console.log(`❓ Clarification: Intelligent question system (STEP 3)\n`);
 });

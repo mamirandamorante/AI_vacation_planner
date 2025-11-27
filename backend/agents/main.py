@@ -1,14 +1,15 @@
 """
-Agent API Server (Flask) - PRODUCTION WITH REAL HIL
-===================================================
-This is a Flask web server that exposes our Python agents via REST API.
+Agent API Server (Flask) - PRODUCTION WITH REAL HIL + INTELLIGENT CLARIFICATION
+===============================================================================
+Flask server exposing Python agents via REST API with clarification support.
 
-PRODUCTION HIL FLOW:
+STEP 3: INTELLIGENT CLARIFICATION FLOW
   1. User starts: POST /api/agents/orchestrate with user_prompt
-  2. Agent pauses: Returns {status: "awaiting_user_input", session_id, recommendations}
-  3. User chooses: POST /api/agents/resume with {session_id, user_decision}
-  4. Agent continues: Resumes from stored state
-  5. Repeat 2-4 until complete
+  2a. IF clarification needed: Returns {status: "clarification_needed", questions: [...]}
+  2b. User provides answers: POST /api/agents/orchestrate with clarification_response
+  3. Agent pauses for HIL: Returns {status: "awaiting_user_input", session_id, recommendations}
+  4. User chooses: POST /api/agents/resume with {session_id, user_decision}
+  5. Repeat 3-4 until complete
 
 Architecture:
   Frontend (Port 3000) 
@@ -27,10 +28,10 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# STEP 1: Add current directory to Python path
+# Add current directory to Python path
 sys.path.insert(0, os.path.dirname(__file__))
 
-# STEP 2: Import our agents
+# Import agents
 from agents.flight_agent import FlightAgent
 from agents.hotel_agent import HotelAgent
 from agents.restaurant_agent import RestaurantAgent
@@ -38,25 +39,25 @@ from agents.attractions_agent import AttractionsAgent
 from agents.orchestrator_agent import OrchestratorAgent
 from agents.itinerary_agent import ItineraryAgent
 
-# STEP 3: Load environment variables
+# Load environment variables
 env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
 load_dotenv(env_path)
 
 print(f"📁 Loading .env from: {os.path.abspath(env_path)}")
 print(f"🔑 GEMINI_API_KEY found: {'Yes ✅' if os.getenv('GEMINI_API_KEY') else 'No ❌'}")
 
-# STEP 4: Initialize Flask application
+# Initialize Flask
 app = Flask(__name__)
 CORS(app)
 
-# STEP 5: Get API keys from environment
+# Get API keys
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 if not GEMINI_API_KEY:
     print("❌ ERROR: GEMINI_API_KEY not found in .env file")
     sys.exit(1)
 
-# STEP 6: Initialize our agents
+# Initialize agents
 PLACES_API_KEY = os.getenv('GOOGLE_PLACES_API_KEY')
 
 flight_agent = FlightAgent(GEMINI_API_KEY)
@@ -76,23 +77,13 @@ orchestrator_agent = OrchestratorAgent(
 print("✅ Agent API Server initialized successfully")
 
 # ============================================================================
-# SESSION STORAGE FOR HIL (In-Memory for now, use Redis/DB for production)
+# SESSION STORAGE FOR HIL
 # ============================================================================
 
-# Store active orchestrator sessions
-# Key: session_id (UUID), Value: orchestrator state dict
 active_sessions = {}
 
 def create_session(orchestrator_state: dict) -> str:
-    """
-    Create a new session for HIL pause.
-    
-    Args:
-        orchestrator_state: State dict from orchestrator including agent instances
-        
-    Returns:
-        session_id: Unique identifier for this session
-    """
+    """Create new session for HIL pause."""
     session_id = str(uuid.uuid4())
     active_sessions[session_id] = orchestrator_state
     print(f"[SESSION] Created session: {session_id}")
@@ -109,7 +100,7 @@ def delete_session(session_id: str):
         print(f"[SESSION] Deleted session: {session_id}")
 
 # ============================================================================
-# ENDPOINTS - The API routes that clients can call
+# ENDPOINTS
 # ============================================================================
 
 @app.route('/health', methods=['GET'])
@@ -117,24 +108,35 @@ def health_check():
     """Health Check Endpoint"""
     return jsonify({
         "status": "ok",
-        "service": "Agent API Server (Production HIL)",
+        "service": "Agent API Server (Production HIL + Clarification)",
         "agents": ["FlightAgent","HotelAgent","RestaurantAgent","AttractionsAgent","ItineraryAgent","OrchestratorAgent"],
-        "active_sessions": len(active_sessions)
+        "active_sessions": len(active_sessions),
+        "features": ["intelligent_clarification", "hil_support", "two_phase_orchestration"]
     })
 
 @app.route('/api/agents/orchestrate', methods=['POST'])
 def orchestrate_vacation():
     """
-    Orchestrator Endpoint - PRODUCTION VERSION WITH REAL HIL
+    Orchestrator Endpoint - WITH INTELLIGENT CLARIFICATION SUPPORT (STEP 3)
     
     Request:
     {
-        "user_prompt": "Plan a trip to Madrid from Dec 10-15, 2025..."
+        "user_prompt": "Plan a trip to Madrid...",
+        "clarification_response": "From Santander, December 10-16, 2025" (STEP 3: optional)
     }
     
     Response Types:
     
-    1. AWAITING USER INPUT (HIL Pause):
+    1. CLARIFICATION NEEDED (STEP 3: NEW):
+    {
+        "status": "clarification_needed",
+        "questions": ["Where will you be departing from?", ...],
+        "reasoning": "I need origin city and exact dates to search for flights",
+        "missing_required": ["origin", "departure_date"],
+        "missing_optional": ["dietary_restrictions"]
+    }
+    
+    2. AWAITING USER INPUT (HIL Pause):
     {
         "status": "awaiting_user_input",
         "session_id": "uuid-here",
@@ -144,7 +146,7 @@ def orchestrate_vacation():
         "summary": "Here are 3 flight options..."
     }
     
-    2. COMPLETE:
+    3. COMPLETE:
     {
         "status": "complete",
         "success": true,
@@ -153,7 +155,7 @@ def orchestrate_vacation():
         "all_results": {...}
     }
     
-    3. ERROR:
+    4. ERROR:
     {
         "status": "error",
         "success": false,
@@ -163,6 +165,7 @@ def orchestrate_vacation():
     try:
         data = request.json
         user_prompt = data.get('user_prompt')
+        clarification_response = data.get('clarification_response')  # STEP 3: Accept clarification
 
         if not user_prompt:
             return jsonify({
@@ -171,17 +174,29 @@ def orchestrate_vacation():
                 "error": "Missing 'user_prompt' key in request body."
             }), 400
 
-        print(f"[API] Starting orchestration: {user_prompt[:60]}...")
+        if clarification_response:
+            print(f"[API] Processing with clarification: {clarification_response[:60]}...")
+        else:
+            print(f"[API] Starting orchestration: {user_prompt[:60]}...")
         
-        # Execute orchestrator (will pause on first HIL)
-        result = orchestrator_agent.execute(user_prompt)
+        # STEP 3: Execute orchestrator with optional clarification
+        result = orchestrator_agent.execute(user_prompt, clarification_response)
         
-        # Check if orchestrator is pausing for HIL
+        # STEP 3: Check if clarification is needed
+        if result.get('status') == 'clarification_needed':
+            print(f"[API] ⏸️  Clarification needed: {len(result.get('questions', []))} questions")
+            return jsonify({
+                "status": "clarification_needed",
+                "questions": result.get('questions', []),
+                "reasoning": result.get('reasoning', ''),
+                "missing_required": result.get('missing_required', []),
+                "missing_optional": result.get('missing_optional', [])
+            }), 200
+        
+        # Check if pausing for HIL
         if result.get('status') == 'awaiting_user_input':
-            # Create session and store orchestrator state
             session_id = create_session(result.get('session_state', {}))
             
-            # Return HIL pause response to frontend
             return jsonify({
                 "status": "awaiting_user_input",
                 "session_id": session_id,
@@ -192,7 +207,7 @@ def orchestrate_vacation():
                 "turn": result.get('turn', 1)
             }), 200
         
-        # Orchestrator completed successfully - FIXED: Forward 'data' field!
+        # Completed successfully
         elif result.get('success'):
             formatted_data = result.get('data', '')
             print(f"[API] ✅ Complete! Forwarding formatted data: {len(formatted_data)} chars")
@@ -200,7 +215,7 @@ def orchestrate_vacation():
             return jsonify({
                 "status": "complete",
                 "success": True,
-                "data": formatted_data,  # CRITICAL FIX: Include the formatted itinerary!
+                "data": formatted_data,
                 "summary": result.get('summary', ''),
                 "all_results": result.get('all_results', {})
             }), 200
@@ -239,7 +254,7 @@ def resume_orchestration():
         }
     }
     
-    Response: Same as /orchestrate - can pause again or complete
+    Response: Same as /orchestrate
     """
     try:
         data = request.json
@@ -264,12 +279,11 @@ def resume_orchestration():
         
         print(f"[API] Resuming session {session_id} with decision: {user_decision.get('status')}")
         
-        # Resume orchestrator with user decision
+        # Resume orchestrator
         result = orchestrator_agent.resume(session_state, user_decision)
         
-        # Check result type (pause again or complete)
+        # Check if pausing again
         if result.get('status') == 'awaiting_user_input':
-            # Still need more input - update session
             active_sessions[session_id] = result.get('session_state', {})
             
             return jsonify({
@@ -282,9 +296,8 @@ def resume_orchestration():
                 "turn": result.get('turn', 1)
             }), 200
         
-        # Completed successfully - FIXED: Forward 'data' field!
+        # Completed successfully
         elif result.get('success'):
-            # Clean up session
             delete_session(session_id)
             
             formatted_data = result.get('data', '')
@@ -293,7 +306,7 @@ def resume_orchestration():
             return jsonify({
                 "status": "complete",
                 "success": True,
-                "data": formatted_data,  # CRITICAL FIX: Include the formatted itinerary!
+                "data": formatted_data,
                 "summary": result.get('summary', ''),
                 "all_results": result.get('all_results', {})
             }), 200
@@ -323,7 +336,7 @@ def resume_orchestration():
 
 @app.route('/api/agents/flight/search', methods=['POST'])
 def search_flights():
-    """Direct FlightAgent endpoint (bypasses orchestrator)"""
+    """Direct FlightAgent endpoint"""
     try:
         data = request.json
         print(f"[API] Direct flight search: {data.get('origin')} → {data.get('destination')}")
@@ -335,7 +348,7 @@ def search_flights():
 
 @app.route('/api/agents/hotel/search', methods=['POST'])
 def search_hotels():
-    """Direct HotelAgent endpoint (bypasses orchestrator)"""
+    """Direct HotelAgent endpoint"""
     try:
         data = request.json
         print(f"[API] Direct hotel search: {data.get('city_code')}")
@@ -347,7 +360,7 @@ def search_hotels():
 
 @app.route('/api/agents/restaurant/search', methods=['POST'])
 def search_restaurants():
-    """Direct RestaurantAgent endpoint (bypasses orchestrator)"""
+    """Direct RestaurantAgent endpoint"""
     try:
         data = request.json
         print(f"[API] Direct restaurant search: {data.get('city')}")
@@ -359,7 +372,7 @@ def search_restaurants():
 
 @app.route('/api/agents/attractions/search', methods=['POST'])
 def search_attractions():
-    """Direct AttractionsAgent endpoint (bypasses orchestrator)"""
+    """Direct AttractionsAgent endpoint"""
     try:
         data = request.json
         print(f"[API] Direct attractions search: {data.get('city')}")
@@ -377,7 +390,7 @@ if __name__ == '__main__':
     port = int(os.environ.get('AGENT_PORT', 8081))
     
     print("\n" + "="*60)
-    print("🚀 Agent API Server Starting (PRODUCTION HIL)")
+    print("🚀 Agent API Server Starting (PRODUCTION HIL + CLARIFICATION)")
     print("="*60)
     print(f"📍 Running on: http://localhost:{port}")
     print(f"🏥 Health check: http://localhost:{port}/health")

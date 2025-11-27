@@ -1,19 +1,20 @@
 "use client";
 
 /**
- * FIXED VACATION PLANNER UI
+ * VACATION PLANNER UI - WITH STEP 3 CLARIFICATION SUPPORT
  * 
- * FIXES APPLIED:
- * - Issue #1: Title is now properly centered
- * - Issue #2: Intelligent loading messages that show which agent is working
- * - Issue #3: Beautiful itinerary formatting with rich HTML
- * - Phase 2 simulation: Progressive loading messages for Restaurant → Attractions → Itinerary
- * - Plan Another Trip button moved to end with matching style
- * 
- * Fixed to match backend API response format:
- * - Backend sends: status: 'awaiting_user_input'
- * - Backend resume endpoint: /api/resume (not /api/plan-vacation-agents/resume)
+ * FEATURES:
+ * - Step 3: Intelligent clarification system for incomplete prompts
+ * - HIL support for flight/hotel selection
+ * - Progressive loading messages
+ * - Beautiful itinerary formatting
  * - Authentication disabled for demo mode
+ * 
+ * STEP 3 ADDITIONS:
+ * - Detects clarification_needed status
+ * - Displays clarification questions in a modal
+ * - Resubmits with user's clarification answers
+ * - Seamless flow: Clarification → HIL → Complete
  */
 
 import { useEffect, useState } from "react";
@@ -46,9 +47,11 @@ type FlightRecommendation = {
   };
 };
 
+// STEP 3: Updated PlanningState to include clarification_needed
 type PlanningState = 
   | { status: 'idle' }
   | { status: 'loading'; currentAgent?: string }
+  | { status: 'clarification_needed'; questions: string[]; reasoning: string; missing_required: string[]; missing_optional: string[] }  // STEP 3: NEW
   | { status: 'awaiting_input'; sessionId: string; agent: string; itemType: string; recommendations: any[]; summary: string }
   | { status: 'complete'; result: string }
   | { status: 'error'; message: string };
@@ -59,13 +62,18 @@ export default function Home() {
   const [planningState, setPlanningState] = useState<PlanningState>({ status: 'idle' });
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [refinementFeedback, setRefinementFeedback] = useState("");
+  
+  // STEP 3: New state for clarification
+  const [clarificationAnswers, setClarificationAnswers] = useState("");
+  const [originalPrompt, setOriginalPrompt] = useState("");
 
   // AUTHENTICATION DISABLED - Bypass auth for demo mode
   useEffect(() => {
     setAuthToken('demo@vacation-planner.ai');
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // STEP 3: Updated handleSubmit to support clarification_response
+  const handleSubmit = async (e: React.FormEvent, clarificationResponse?: string) => {
     e.preventDefault();
 
     if (!prompt.trim()) {
@@ -73,18 +81,30 @@ export default function Home() {
       return;
     }
 
-    // Start with FlightAgent
+    // Store original prompt for clarification resubmission
+    if (!clarificationResponse) {
+      setOriginalPrompt(prompt);
+    }
+
+    // Start with FlightAgent (or clarification if needed)
     setPlanningState({ status: 'loading', currentAgent: 'FlightAgent' });
 
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
+      
+      // STEP 3: Build request body with optional clarification_response
+      const requestBody: any = { prompt };
+      if (clarificationResponse) {
+        requestBody.clarification_response = clarificationResponse;
+      }
+      
       const response = await fetch(`${backendUrl}/api/plan-vacation-agents`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: authToken ? `Bearer ${authToken}` : "",
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
@@ -100,8 +120,22 @@ export default function Home() {
     }
   };
 
+  // STEP 3: Updated to handle clarification_needed
   const handlePlanningResponse = (data: any) => {
     console.log('🔍 Processing response with status:', data.status);
+    
+    // STEP 3: Handle clarification needed FIRST (before other checks)
+    if (data.status === 'clarification_needed') {
+      console.log('❓ Clarification needed:', data.questions?.length, 'questions');
+      setPlanningState({
+        status: 'clarification_needed',
+        questions: data.questions || [],
+        reasoning: data.reasoning || '',
+        missing_required: data.missing_required || [],
+        missing_optional: data.missing_optional || []
+      });
+      return;
+    }
     
     // Handle error responses
     if (data.status === 'error' || (data.success === false && data.status !== 'awaiting_user_input')) {
@@ -112,7 +146,7 @@ export default function Home() {
       return;
     }
 
-    // Handle HIL pause - FIXED: Check for correct field name
+    // Handle HIL pause
     if (data.status === 'awaiting_user_input') {
       console.log('⏸️ HIL pause detected for:', data.agent);
       setPlanningState({
@@ -142,6 +176,51 @@ export default function Home() {
       status: 'error',
       message: "Received unexpected response from server."
     });
+  };
+
+  // STEP 3: New function to handle clarification submission
+  const handleSubmitClarification = async () => {
+    if (!clarificationAnswers.trim()) {
+      alert('Please provide your answers before continuing');
+      return;
+    }
+
+    console.log('💬 Submitting clarification:', clarificationAnswers);
+    
+    // Clear clarification UI and show loading
+    setPlanningState({ status: 'loading', currentAgent: 'FlightAgent' });
+    
+    // Resubmit with original prompt + clarification
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
+      
+      const response = await fetch(`${backendUrl}/api/plan-vacation-agents`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authToken ? `Bearer ${authToken}` : "",
+        },
+        body: JSON.stringify({
+          prompt: originalPrompt,
+          clarification_response: clarificationAnswers
+        }),
+      });
+
+      const data = await response.json();
+      console.log('📦 Clarification response:', data);
+      
+      // Clear clarification answers
+      setClarificationAnswers("");
+      
+      handlePlanningResponse(data);
+
+    } catch (error) {
+      console.error("Clarification error:", error);
+      setPlanningState({
+        status: 'error',
+        message: "Failed to process your clarification."
+      });
+    }
   };
 
   /**
@@ -293,7 +372,7 @@ export default function Home() {
   };
 
   /**
-   * NEW: Convert markdown-style text to rich HTML
+   * Convert markdown-style text to rich HTML
    */
   const formatItineraryText = (text: string) => {
     if (!text) return '';
@@ -352,11 +431,13 @@ export default function Home() {
     setPlanningState({ status: 'idle' });
     setPrompt("");
     setRefinementFeedback("");
+    setClarificationAnswers("");
+    setOriginalPrompt("");
   };
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-[#f5f3f0] via-[#faf8f5] to-[#f0ede8]">
-      {/* Header - FIXED: Now properly centered */}
+      {/* Header */}
       <div className="container mx-auto px-4 py-8">
         <div className="flex flex-col items-center justify-center text-center mb-12">
           <h1 className="text-4xl font-bold text-[#2d2a26] mb-2">
@@ -364,6 +445,75 @@ export default function Home() {
           </h1>
           <p className="text-[#6b6560] text-lg">Plan your perfect getaway with AI-powered recommendations</p>
         </div>
+
+        {/* STEP 3: Clarification Modal */}
+        {planningState.status === 'clarification_needed' && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="p-8">
+                <div className="text-center mb-6">
+                  <span className="text-6xl mb-4 block">🤔</span>
+                  <h2 className="text-3xl font-bold text-[#2d2a26] mb-2">
+                    We need a bit more information
+                  </h2>
+                  <p className="text-[#6b6560] text-lg">
+                    To plan the perfect vacation, please answer these questions:
+                  </p>
+                </div>
+
+                {/* Display reasoning if provided */}
+                {planningState.reasoning && (
+                  <div className="bg-[#faf8f5] border-l-4 border-[#c17d3f] p-4 mb-6 rounded-lg">
+                    <p className="text-[#2d2a26] text-sm">
+                      <strong>Why we're asking:</strong> {planningState.reasoning}
+                    </p>
+                  </div>
+                )}
+
+                {/* Questions List */}
+                <div className="mb-6 space-y-4">
+                  {planningState.questions.map((question, index) => (
+                    <div key={index} className="bg-[#fdfcfb] border-2 border-[#e8e4df] rounded-xl p-4">
+                      <p className="text-[#2d2a26]">
+                        <strong className="text-[#c17d3f]">Q{index + 1}:</strong> {question}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Answer Input */}
+                <div className="mb-6">
+                  <label className="block text-sm font-semibold text-[#2d2a26] mb-2">
+                    Your answers:
+                  </label>
+                  <textarea
+                    value={clarificationAnswers}
+                    onChange={(e) => setClarificationAnswers(e.target.value)}
+                    placeholder="Please provide your answers here...&#10;&#10;Example: 'From Santander, December 10-16, 2025, no dietary restrictions'"
+                    className="w-full px-4 py-3 border-2 border-[#e8e4df] rounded-xl focus:outline-none focus:border-[#c4bdb5] text-[#2d2a26] placeholder-[#b0aaa4] min-h-[120px] resize-none bg-white"
+                  />
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={resetPlanner}
+                    className="flex-1 px-6 py-3 border-2 border-[#e8e4df] text-[#2d2a26] rounded-xl hover:bg-[#faf8f5] transition-all duration-200 font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSubmitClarification}
+                    disabled={!clarificationAnswers.trim()}
+                    className="flex-1 px-6 py-3 bg-gradient-to-r from-[#c17d3f] to-[#a86b32] text-white rounded-xl hover:from-[#d18d4f] hover:to-[#b87b42] disabled:from-[#d4cfc8] disabled:to-[#d4cfc8] disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-md"
+                  >
+                    Continue Planning →
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Error State */}
         {planningState.status === 'error' && (
@@ -386,7 +536,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* NEW: Intelligent Loading State with Agent-Specific Messages */}
+        {/* Intelligent Loading State with Agent-Specific Messages */}
         {planningState.status === 'loading' && (
           <div className="max-w-3xl mx-auto mb-8">
             <div className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-12">
@@ -532,7 +682,7 @@ export default function Home() {
         {/* Main Planning Interface */}
         <div className="max-w-3xl mx-auto">
           {planningState.status === 'idle' && (
-            <form onSubmit={handleSubmit} className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-8">
+            <form onSubmit={(e) => handleSubmit(e)} className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-8">
               <label className="block text-lg font-semibold text-[#2d2a26] mb-4">
                 Where would you like to go? ✈️
               </label>
@@ -554,11 +704,11 @@ export default function Home() {
           )}
         </div>
 
-        {/* Results Display - NEW: Rich HTML formatting with button at the end */}
+        {/* Results Display - Rich HTML formatting with button at the end */}
         {planningState.status === 'complete' && (
           <div className="max-w-5xl mx-auto">
             <div className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-10">
-              {/* Rich HTML formatting of itinerary - NO HEADER */}
+              {/* Rich HTML formatting of itinerary */}
               <div 
                 className="prose prose-lg max-w-none mb-8"
                 dangerouslySetInnerHTML={{ __html: formatItineraryText(planningState.result) }}

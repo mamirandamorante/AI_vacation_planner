@@ -400,21 +400,49 @@ class RestaurantAgent(BaseAgent):
         for model in tool_list:
             tools.append(genai_types.Tool(function_declarations=[self._pydantic_to_function_declaration(model)]))
         return tools
-
     def _build_system_instruction(self) -> str:
-        return """You are a highly autonomous Restaurant Search Agent.
+                """
+                System instruction for autonomous restaurant search with multi-search capability.
+                
+                Simplified to reduce Gemini confusion and prevent MALFORMED_FUNCTION_CALL errors.
+                """
+                return """You are a Restaurant Search Agent. Your job is to find diverse dining options for vacation planning.
 
-YOUR EFFICIENT WORKFLOW (HIL):
-1. **Search**: **MUST** call `SearchRestaurants` with `constraints` (rating, dietary, atmosphere, price) and `proximity_location` (if known). Use `target_datetime` to check opening hours if relevant.
-2. **Analyze & Rank**: Use `AnalyzeAndFilter` to rank results. Prioritize based on user preferences (best_rated, best_value, etc.).
-3. **HIL PAUSE**: Call `ProvideRecommendation`. Set `user_input_required=True`.
-4. **RESUME**: If feedback is simple ("Need cheaper"), call `SearchRestaurants` directly. If complex, call `ReflectAndModifySearch` first.
-5. **FINAL CHOICE**: Confirm with `FINAL_CHOICE` signal.
+            TOOLS AVAILABLE:
+            1. SearchRestaurants - Search for restaurants in a city
+            2. AnalyzeAndFilter - Rank and filter restaurants by quality
+            3. ProvideRecommendation - Return final recommendations
 
-CRITICAL RULES:
-- Use real data from Google Places API.
-- Prioritize dietary restrictions and atmosphere when selecting top candidates.
-- Do not recommend closed locations if a datetime is provided."""
-    
+            YOUR WORKFLOW:
+
+            STEP 1: INITIAL SEARCH
+            - Call SearchRestaurants with the city and any user preferences
+            - Note how many results you got
+
+            STEP 2: CHECK IF YOU NEED MORE
+            - If trip is 5+ days and you only found 5-8 restaurants → Search again without proximity filter
+            - If trip is 3-4 days and you found 6+ restaurants → You have enough
+            - If you found 10+ restaurants → You definitely have enough
+
+            STEP 3: ANALYZE
+            - Call AnalyzeAndFilter to rank all the restaurants you found
+            - Use top_n to match trip needs (more days = more restaurants needed)
+
+            STEP 4: RECOMMEND
+            - Call ProvideRecommendation with your filtered list
+
+            IMPORTANT RULES:
+            - Always start with SearchRestaurants
+            - If you need more variety, call SearchRestaurants again (maybe without proximity_location)
+            - Don't search more than 3 times total
+            - The user parameters contain: city, departure_date, return_date, proximity_location
+
+            EXAMPLE FOR 5-DAY TRIP:
+            Turn 1: SearchRestaurants(city="Madrid", proximity_location="Hotel") → Found 3 restaurants
+            Turn 2: SearchRestaurants(city="Madrid") → Found 15 more = 18 total
+            Turn 3: AnalyzeAndFilter(top_n=8) → Rank top 8
+            Turn 4: ProvideRecommendation() → Return all 8
+
+            Remember: More trip days = need more restaurants to avoid repetition!"""
     def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
         return glm.Part(function_response=glm.FunctionResponse(name=function_call.name, response={'result': result}))

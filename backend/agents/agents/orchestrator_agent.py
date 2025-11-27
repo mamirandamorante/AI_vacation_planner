@@ -1,14 +1,15 @@
 """
-Orchestrator Agent - TWO-PHASE HIL VERSION
-==========================================
+Orchestrator Agent - TWO-PHASE HIL VERSION WITH INTELLIGENT CLARIFICATION
+=========================================================================
 Phase 1: User chooses flight and hotel (HIL)
 Phase 2: System auto-selects restaurants/attractions/itinerary
 
-This is simpler, more reliable, and provides better UX.
+STEP 3: Intelligent clarification system handles incomplete/ambiguous prompts
 """
 
 import json
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 import google.generativeai as genai
 from google.generativeai import types as genai_types
 from google.ai import generativelanguage as glm
@@ -37,6 +38,28 @@ class BaseAgent:
 # =============================================================================
 # ORCHESTRATOR TOOL SCHEMAS
 # =============================================================================
+
+class RequestClarification(BaseModel):
+    """
+    STEP 3 NEW TOOL: Request missing or ambiguous information from user.
+    LLM autonomously decides when to call this and what questions to ask.
+    """
+    clarification_questions: List[str] = Field(
+        ..., 
+        description="List of clear, natural questions to ask the user. Generate conversational questions, not robotic ones."
+    )
+    reasoning: str = Field(
+        ..., 
+        description="Explain why you need this information and what you'll do with it."
+    )
+    missing_required_fields: List[str] = Field(
+        default_factory=list,
+        description="Which REQUIRED fields are missing or ambiguous: origin, destination, departure_date, return_date"
+    )
+    missing_optional_fields: List[str] = Field(
+        default_factory=list,
+        description="Which OPTIONAL preferences you want to ask about: dietary_restrictions, cuisine_preferences, hotel_amenities, budget"
+    )
 
 class FlightSearch(BaseModel):
     """Tool schema for triggering FlightAgent."""
@@ -96,7 +119,7 @@ class GenerateItinerary(BaseModel):
 class OrchestratorAgent(BaseAgent):
     
     def __init__(self, gemini_api_key: str, flight_agent, hotel_agent, restaurant_agent, attractions_agent, itinerary_agent):
-        """Initialize OrchestratorAgent with two-phase HIL."""
+        """Initialize OrchestratorAgent with two-phase HIL and intelligent clarification."""
         super().__init__("OrchestratorAgent", gemini_api_key)
         
         # Store specialist agents
@@ -106,8 +129,9 @@ class OrchestratorAgent(BaseAgent):
         self.attractions_agent = attractions_agent
         self.itinerary_agent = itinerary_agent
         
-        # Tool execution mapping
+        # Tool execution mapping - STEP 3: Added RequestClarification
         self.specialist_tools = {
+            "RequestClarification": self._tool_request_clarification,  # STEP 3: NEW
             "FlightSearch": self._tool_flight_search,
             "HotelSearch": self._tool_hotel_search,
             "RestaurantSearch": self._tool_restaurant_search,
@@ -115,8 +139,9 @@ class OrchestratorAgent(BaseAgent):
             "GenerateItinerary": itinerary_agent.execute,
         }
 
-        # Pydantic schema mapping
+        # Pydantic schema mapping - STEP 3: Added RequestClarification
         self.tool_schemas = {
+            "RequestClarification": RequestClarification,  # STEP 3: NEW
             "FlightSearch": FlightSearch,
             "HotelSearch": HotelSearch,
             "RestaurantSearch": RestaurantSearch,
@@ -140,7 +165,27 @@ class OrchestratorAgent(BaseAgent):
             system_instruction=self.system_instruction,
             generation_config={'temperature': 0.7}
         )
-        self.log("✅ OrchestratorAgent initialized with TWO-PHASE HIL")
+        self.log("✅ OrchestratorAgent initialized with TWO-PHASE HIL + CLARIFICATION")
+
+    # =========================================================================
+    # STEP 3: CLARIFICATION HANDLING
+    # =========================================================================
+
+    def _tool_request_clarification(self, params: RequestClarification) -> Dict[str, Any]:
+        """
+        Handle clarification request from LLM.
+        This doesn't execute - it returns a special status for main.py to handle.
+        """
+        self.log(f"⏸️  LLM requests clarification: {len(params.clarification_questions)} questions")
+        self.log(f"   Reasoning: {params.reasoning}")
+        
+        return {
+            "status": "clarification_needed",
+            "questions": params.clarification_questions,
+            "reasoning": params.reasoning,
+            "missing_required": params.missing_required_fields,
+            "missing_optional": params.missing_optional_fields
+        }
 
     # =========================================================================
     # PHASE 1: CRITICAL DECISIONS (HIL)
@@ -161,7 +206,7 @@ class OrchestratorAgent(BaseAgent):
         
         # HIL PAUSE
         if status == HIL_PAUSE_REQUIRED:
-            self.log(f"⏸️ {agent_name} paused for user input")
+            self.log(f"⏸️  {agent_name} paused for user input")
             recommendations = result.get(f'recommended_{item_name}s', [])
             summary = result.get('recommendation_summary', f"Here are the top {item_name} options.")
             
@@ -189,7 +234,7 @@ class OrchestratorAgent(BaseAgent):
         """
         Resume a Phase 1 agent after user makes a choice.
         """
-        self.log(f"▶️ Phase 1: Resuming {agent_name}...")
+        self.log(f"▶️  Phase 1: Resuming {agent_name}...")
         
         initial_params = session_state.get('initial_params', {})
         
@@ -252,14 +297,17 @@ class OrchestratorAgent(BaseAgent):
         return {'content': content, 'original_params': initial_params}
 
     # =========================================================================
-    # PHASE 2: AUTOMATED COMPLETION (NO HIL) - FIXED TO EXTRACT FORMATTED TEXT
+    # PHASE 2: AUTOMATED COMPLETION (NO HIL)
     # =========================================================================
 
     def _execute_phase2(self, trip_details: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute Phase 2: Automatically select restaurants, attractions, and generate itinerary.
         
-        FIXED: Now properly extracts formatted_itinerary text for frontend display.
+        FIXES from STEP 2:
+        - Proper destination city extraction
+        - Increased max_results for sufficient variety (20 instead of 10)
+        - Better location handling
         """
         self.log("🚀 Phase 2: Auto-completing restaurants, attractions, and itinerary...")
         
@@ -268,97 +316,125 @@ class OrchestratorAgent(BaseAgent):
             final_flight = self.all_results.get('final_flight', {})
             final_hotel = self.all_results.get('final_hotel', {})
             
-            destination_city = trip_details.get('destination', 'unknown')
-            hotel_location = final_hotel.get('name', destination_city)
+            # STEP 2 FIX: Extract proper destination city
+            destination_city = None
             
-            # Step 1: Auto-select restaurants near hotel
-            self.log("🍽️ Phase 2: Auto-selecting restaurants...")
+            # Try hotel city first (most accurate)
+            if final_hotel:
+                hotel_address = final_hotel.get('address', {})
+                if isinstance(hotel_address, dict):
+                    destination_city = hotel_address.get('cityName') or hotel_address.get('city')
+                elif isinstance(hotel_address, str):
+                    destination_city = final_hotel.get('cityCode') or final_hotel.get('name', '').split(',')[0]
+            
+            # Fallback to flight destination (convert IATA to city name)
+            if not destination_city and final_flight:
+                dest_code = final_flight.get('outbound', {}).get('to', '')
+                iata_to_city = {
+                    'JFK': 'New York', 'LGA': 'New York', 'EWR': 'New York',
+                    'LAX': 'Los Angeles', 'SFO': 'San Francisco',
+                    'ORD': 'Chicago', 'MIA': 'Miami', 'DFW': 'Dallas',
+                    'LHR': 'London', 'CDG': 'Paris', 'FCO': 'Rome',
+                    'MAD': 'Madrid', 'BCN': 'Barcelona', 'TYO': 'Tokyo'
+                }
+                destination_city = iata_to_city.get(dest_code, trip_details.get('destination', 'unknown'))
+            
+            # Final fallback
+            if not destination_city:
+                destination_city = trip_details.get('destination', 'unknown')
+            
+            self.log(f"📍 Destination city for Phase 2: {destination_city}")
+            
+            # Get hotel location for proximity
+            hotel_location = final_hotel.get('name', destination_city)
+            self.log(f"📍 Hotel location for proximity: {hotel_location}")
+            
+            # Step 1: Auto-select restaurants
+            self.log("🍽️  Phase 2: Auto-selecting restaurants...")
             restaurant_params = {
                 'city': destination_city,
                 'proximity_location': hotel_location,
-                'max_results': 10,
+                'max_results': 20,  # STEP 2 FIX: Was 10, now 20
                 'departure_date': trip_details.get('departure_date'),
                 'return_date': trip_details.get('return_date')   
             }
+            
+            self.log(f"🔍 Restaurant search params: city={destination_city}, proximity={hotel_location}, max={restaurant_params['max_results']}")
+            
             restaurant_result = self.restaurant_agent.execute(restaurant_params)
             
-            # Extract recommendations (agent returns HIL_PAUSE but we ignore it)
             if restaurant_result.get('status_code') == 'HIL_PAUSE_REQUIRED':
+                restaurants = restaurant_result.get('recommended_restaurants', [])
                 self.all_results['final_restaurant'] = {
-                    'recommended_restaurants': restaurant_result.get('recommended_restaurants', []),
+                    'recommended_restaurants': restaurants,
                     'summary': restaurant_result.get('recommendation_summary', '')
                 }
-                self.log("✅ Restaurant auto-selected")
+                self.log(f"✅ Restaurant auto-selected: {len(restaurants)} restaurants found")
             elif restaurant_result.get('status_code') == SUCCESS:
                 self.all_results['final_restaurant'] = restaurant_result.get('final_restaurant', {})
-                self.log("✅ Restaurant auto-selected")
+                restaurants = [restaurant_result.get('final_restaurant', {})]
+                self.log(f"✅ Restaurant auto-selected")
+            else:
+                self.log("⚠️  Restaurant selection incomplete, using partial results", "WARN")
+                restaurants = restaurant_result.get('recommended_restaurants', [])
+                self.all_results['final_restaurant'] = {'recommended_restaurants': restaurants}
             
-            # Step 2: Auto-select attractions near hotel
+            # Step 2: Auto-select attractions
             self.log("🎭 Phase 2: Auto-selecting attractions...")
             attraction_params = {
                 'city': destination_city,
                 'proximity_location': hotel_location,
-                'max_results': 10,
+                'max_results': 20,  # STEP 2 FIX: Was 10, now 20
                 'departure_date': trip_details.get('departure_date'),
                 'return_date': trip_details.get('return_date')
             }
+            
+            self.log(f"🔍 Attraction search params: city={destination_city}, proximity={hotel_location}, max={attraction_params['max_results']}")
+            
             attraction_result = self.attractions_agent.execute(attraction_params)
             
-            # Extract recommendations (agent returns HIL_PAUSE but we ignore it)
             if attraction_result.get('status_code') == 'HIL_PAUSE_REQUIRED':
+                attractions = attraction_result.get('recommended_attractions', [])
                 self.all_results['final_attraction'] = {
-                    'recommended_attractions': attraction_result.get('recommended_attractions', []),
+                    'recommended_attractions': attractions,
                     'summary': attraction_result.get('recommendation_summary', '')
                 }
-                self.log("✅ Attraction auto-selected")
+                self.log(f"✅ Attraction auto-selected: {len(attractions)} attractions found")
             elif attraction_result.get('status_code') == SUCCESS:
                 self.all_results['final_attraction'] = attraction_result.get('final_attraction', {})
-                self.log("✅ Attraction auto-selected")
+                attractions = [attraction_result.get('final_attraction', {})]
+                self.log(f"✅ Attraction auto-selected")
+            else:
+                self.log("⚠️  Attraction selection incomplete, using partial results", "WARN")
+                attractions = attraction_result.get('recommended_attractions', [])
+                self.all_results['final_attraction'] = {'recommended_attractions': attractions}
             
-            # Step 3: Generate itinerary with real data
+            # Step 3: Generate itinerary
             self.log("📅 Phase 2: Generating itinerary...")
             
-            # Extract collected data
-            restaurants = self.all_results.get('final_restaurant', {}).get('recommended_restaurants', [])
-            attractions = self.all_results.get('final_attraction', {}).get('recommended_attractions', [])
-            
-            self.log(f"📊 Passing to ItineraryAgent: {len(restaurants)} restaurants, {len(attractions)} attractions")
-            
             itinerary_params = {
-                'trip_summary': f"Trip to {destination_city} from {trip_details.get('departure_date')} to {trip_details.get('return_date')}",
+                'destination': destination_city,
                 'departure_date': trip_details.get('departure_date'),
                 'return_date': trip_details.get('return_date'),
-                'destination': destination_city,
+                'final_flight': final_flight,
+                'final_hotel': final_hotel,
                 'restaurants': restaurants,
                 'attractions': attractions,
-                'final_hotel': final_hotel,
-                'final_flight': final_flight 
+                'trip_summary': trip_details.get('user_prompt', '')
             }
+            
+            self.log(f"📊 Itinerary generation: {len(restaurants)} restaurants, {len(attractions)} attractions")
+            
             itinerary_result = self.itinerary_agent.execute(itinerary_params)
             
-            # DEBUG: Log what we received
-            self.log(f"🔍 DEBUG: Itinerary result keys: {list(itinerary_result.keys())}")
-            self.log(f"🔍 DEBUG: Has formatted_itinerary: {'formatted_itinerary' in itinerary_result}")
-            
-            # CRITICAL FIX: Extract the formatted_itinerary text
-            formatted_text = itinerary_result.get('formatted_itinerary', '')
-            if not formatted_text:
-                self.log("⚠️ WARNING: No formatted_itinerary found in result!", "WARN")
-                formatted_text = "Itinerary generation incomplete"
-            
-            self.log(f"✅ Extracted formatted itinerary: {len(formatted_text)} characters")
-            
-            # Store both the itinerary data AND the formatted text
-            self.all_results['itinerary'] = {
-                'success': True,
-                'itinerary': itinerary_result.get('itinerary', []),
-                'formatted_itinerary': formatted_text,  # THIS IS THE KEY LINE!
-                'summary': itinerary_result.get('recommendation_summary', '')
-            }
-            
-            self.log("✅ Phase 2 complete!")
-            return {"status": "success"}
-            
+            if itinerary_result.get('success'):
+                self.all_results['itinerary'] = itinerary_result
+                self.log("✅ Phase 2 complete!")
+                return {"status": "success", "data": itinerary_result}
+            else:
+                self.log("❌ Itinerary generation failed", "ERROR")
+                return {"status": "error", "error": "Itinerary generation failed"}
+                
         except Exception as e:
             self.log(f"❌ Phase 2 error: {str(e)}", "ERROR")
             import traceback
@@ -415,15 +491,37 @@ class OrchestratorAgent(BaseAgent):
     # PUBLIC ENTRY POINTS
     # =========================================================================
 
-    def execute(self, user_prompt: str, max_turns: int = 10) -> Dict[str, Any]:
+    def execute(self, user_prompt: str, clarification_response: Optional[str] = None, max_turns: int = 10) -> Dict[str, Any]:
         """
-        Main entry point - starts Phase 1 (Flight selection).
-        """
-        self.log(f"Starting TWO-PHASE orchestration: {user_prompt}")
+        STEP 3: Main entry point with intelligent clarification support.
         
-        # Parse user prompt with LLM to extract trip details
+        Args:
+            user_prompt: Initial user vacation request
+            clarification_response: User's answers to clarification questions (if any)
+            max_turns: Max LLM conversation turns
+            
+        Returns:
+            - If clarification needed: {"status": "clarification_needed", "questions": [...]}
+            - If ready for Phase 1: {"status": "awaiting_user_input", "agent": "FlightAgent", ...}
+            - If error: {"success": False, "error": "..."}
+        """
+        
+        # STEP 3: Combine prompt with clarification if provided
+        if clarification_response:
+            full_prompt = f"""ORIGINAL REQUEST: {user_prompt}
+
+ADDITIONAL INFORMATION PROVIDED: {clarification_response}
+
+Now proceed with planning using all the information above."""
+            self.log("📥 Processing clarification response...")
+        else:
+            full_prompt = user_prompt
+        
+        self.log(f"Starting TWO-PHASE orchestration: {full_prompt[:100]}...")
+        
+        # Parse user prompt with LLM
         chat = self.model.start_chat()
-        response = chat.send_message(user_prompt)
+        response = chat.send_message(full_prompt)
         
         # Extract function calls
         current_function_calls = []
@@ -435,15 +533,22 @@ class OrchestratorAgent(BaseAgent):
         if not current_function_calls:
             return {"success": False, "error": "Could not parse trip request"}
         
-        # Execute first tool (should be FlightSearch)
+        # Execute first tool
         func_call = current_function_calls[0]
         tool_name = func_call.name
         tool_args = self._convert_proto_to_dict(func_call.args)
         
+        # STEP 3: Check if LLM is requesting clarification
+        if tool_name == "RequestClarification":
+            self.log("⏸️  LLM requests clarification from user")
+            return self._tool_request_clarification(RequestClarification(**tool_args))
+        
+        # Otherwise proceed with Phase 1
         self.log(f"🎯 Phase 1: Starting with {tool_name}")
         
         # Store trip details for Phase 2
         self.trip_details = tool_args.copy()
+        self.trip_details['user_prompt'] = user_prompt
         
         try:
             result = self._execute_orchestrator_tool(tool_name, tool_args)
@@ -452,7 +557,7 @@ class OrchestratorAgent(BaseAgent):
             if result.get('status') == 'awaiting_user_input':
                 return {
                     "status": "awaiting_user_input",
-                    "session_id": None,  # Will be created by main.py
+                    "session_id": None,
                     "agent": result.get('agent'),
                     "item_type": result.get('item_type'),
                     "recommendations": result.get('recommendations', []),
@@ -473,14 +578,8 @@ class OrchestratorAgent(BaseAgent):
     def resume(self, session_state: Dict[str, Any], user_decision: Dict[str, Any]) -> Dict[str, Any]:
         """
         Resume orchestration after user makes a choice.
-        
-        TWO-PHASE LOGIC:
-        1. If resuming FlightAgent → Complete flight, then start HotelAgent
-        2. If resuming HotelAgent → Complete hotel, then execute Phase 2
-        
-        FIXED: Now properly passes formatted_itinerary to frontend as 'data'
         """
-        self.log("▶️ Resuming TWO-PHASE orchestration...")
+        self.log("▶️  Resuming TWO-PHASE orchestration...")
         
         current_phase = session_state.get('current_phase', 'FLIGHT')
         hil_result = session_state.get('result', {})
@@ -553,19 +652,18 @@ class OrchestratorAgent(BaseAgent):
                 phase2_result = self._execute_phase2(trip_details)
                 
                 if phase2_result.get('status') == 'success':
-                    # CRITICAL FIX: Extract formatted itinerary for frontend
                     formatted_itinerary = self.all_results.get('itinerary', {}).get('formatted_itinerary', '')
                     
                     self.log(f"📤 Sending formatted itinerary to frontend: {len(formatted_itinerary)} characters")
                     
                     if not formatted_itinerary:
-                        self.log("⚠️ WARNING: Empty formatted itinerary!", "ERROR")
+                        self.log("⚠️  WARNING: Empty formatted itinerary!", "ERROR")
                         formatted_itinerary = "Error: Itinerary generation failed"
                     
                     return {
                         "status": "complete",
                         "success": True,
-                        "data": formatted_itinerary,  # THIS IS WHAT THE FRONTEND NEEDS!
+                        "data": formatted_itinerary,
                         "summary": "Complete vacation plan ready!",
                         "all_results": self.all_results
                     }
@@ -586,18 +684,73 @@ class OrchestratorAgent(BaseAgent):
     # =========================================================================
     
     def _build_system_instruction(self) -> str:
-        """System instruction for two-phase orchestration."""
-        return """You are the Orchestrator Agent for a vacation planning system.
+        """STEP 3: System instruction with intelligent clarification guidance."""
+        current_date = datetime.now().strftime("%B %d, %Y")
+        
+        return f"""You are an intelligent vacation planning orchestrator.
 
-YOUR JOB:
-1. Parse the user's vacation request
-2. Extract: origin, destination, departure_date, return_date, passengers, budget
-3. Call FlightSearch with these parameters
+CONTEXT:
+- Current date: {current_date}
+- All travel dates MUST be in the future
 
-CRITICAL:
-- You ONLY call FlightSearch initially
-- The system handles HotelSearch, RestaurantSearch, AttractionsSearch, and GenerateItinerary automatically
-- Extract all trip details accurately from the user's prompt"""
+REQUIRED INFORMATION to start planning:
+1. origin - Departure city/airport (where departing from)
+2. destination - Arrival city/airport (where going to)
+3. departure_date - Travel start date (YYYY-MM-DD format, MUST be future)
+4. return_date - Travel end date (YYYY-MM-DD format, MUST be after departure)
+
+OPTIONAL PREFERENCES (ask based on context - use judgment):
+- If user mentions FOOD/RESTAURANTS → Ask about dietary restrictions, cuisine preferences
+- If user mentions HOTELS/ACCOMMODATION → Ask about amenities (pool, gym, city center)
+- If user mentions BUDGET → Confirm budget constraints
+- If user mentions ACTIVITIES → Ask about interests (museums, outdoor, nightlife)
+
+YOUR WORKFLOW:
+
+1. Analyze the user's prompt carefully
+2. Check if you have ALL REQUIRED fields with valid future dates
+3. Consider if OPTIONAL preferences would significantly improve planning
+4. If missing REQUIRED info OR year is ambiguous OR dates might be in past:
+   → Call RequestClarification
+   → Ask about REQUIRED fields first
+   → Then ask about context-relevant OPTIONAL preferences
+   → Generate clear, conversational questions (not robotic)
+   → Keep total questions to 3-5 max
+
+5. If you have complete, valid information:
+   → Call FlightSearch to start Phase 1
+
+CRITICAL RULES:
+- NEVER assume year if ambiguous (ask "December 2025 or 2026?")
+- NEVER use past dates - validate against current date: {current_date}
+- ALWAYS ask rather than guess when information is vague
+- Generate natural questions, avoid robotic phrasing
+- If user already mentioned preferences, DON'T ask again
+
+EXAMPLES:
+
+User: "Trip to Madrid in December for 5 days"
+→ Missing: origin, exact dates, year
+→ Context: No food/hotel mentions
+→ Call RequestClarification with:
+   - "Where will you be departing from?"
+   - "Which December - 2025 or 2026?"
+   - "What are your exact travel dates? (e.g., December 10-15)"
+
+User: "Trip to Madrid in December, love tapas and traditional food"
+→ Missing: origin, exact dates, year
+→ Context: User mentioned food
+→ Call RequestClarification with:
+   - "Where will you be departing from?"
+   - "Which December - 2025 or 2026? What are your exact dates?"
+   - "Since you love traditional food, any dietary restrictions? (e.g., vegetarian, vegan, gluten-free)"
+
+User: "Santander to Madrid, Dec 10-16, 2025, vegan options, 4-star hotels with gym"
+→ Has: All REQUIRED fields + preferences
+→ Dates are valid (future)
+→ Call FlightSearch immediately with: origin="Santander", destination="Madrid", departure_date="2025-12-10", return_date="2025-12-16"
+
+Remember: You ONLY call FlightSearch initially. The system handles hotels, restaurants, attractions automatically."""
 
     def _convert_proto_to_dict(self, proto_map) -> Dict[str, Any]:
         """Convert protobuf map to dict."""
@@ -657,8 +810,8 @@ CRITICAL:
         }
 
     def _create_gemini_tools(self) -> List:
-        """Create Gemini tool declarations."""
-        tool_list = [FlightSearch, HotelSearch, RestaurantSearch, AttractionsSearch, GenerateItinerary]
+        """STEP 3: Create Gemini tool declarations - includes RequestClarification."""
+        tool_list = [RequestClarification, FlightSearch, HotelSearch, RestaurantSearch, AttractionsSearch, GenerateItinerary]
         tools = []
         for pydantic_model in tool_list:
             declaration_dict = self._pydantic_to_function_declaration(pydantic_model)

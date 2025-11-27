@@ -34,25 +34,25 @@ class BaseAgent:
         return {"success": False, "error": f"Agent Error: {str(e)}"}
 
 # =============================================================================
-# TOOL SCHEMAS (Product-Grade Enhancements)
+# FLATTENED TOOL SCHEMAS (Fixed - No Nested Models)
 # =============================================================================
-
-class FilterConstraints(BaseModel):
-    """Structured filtering constraints for attraction search."""
-    min_rating: Optional[float] = Field(4.0, description="Minimum rating required (e.g., 4.5).")
-    attraction_types: List[str] = Field(default_factory=list, description="Preferred attraction categories (e.g., ['museum', 'park', 'historical']).")
-    interests: List[str] = Field(default_factory=list, description="User interests (e.g., ['art', 'history', 'nature']).")
-    max_entry_fee: Optional[float] = Field(None, description="Maximum entry fee acceptable (e.g., 50.0).")
-    is_indoor_outdoor: Optional[str] = Field(None, description="Filter for 'indoor' or 'outdoor' activities.")
-    wheelchair_accessible: Optional[bool] = Field(None, description="Filter for locations with wheelchair accessible entrances/restrooms.")
 
 class SearchAttractions(BaseModel):
     """
     Tool for searching attraction options using Google Places API.
-    Includes temporal and contextual parameters for production use.
+    All fields flattened to avoid nested model issues with Gemini.
     """
     city: str = Field(..., description="City name for attraction search (e.g., 'Paris', 'Tokyo').")
-    constraints: FilterConstraints = Field(default_factory=FilterConstraints, description="Structured filtering constraints to apply immediately to the API search.")
+    
+    # Flattened constraint fields (no nested FilterConstraints model)
+    min_rating: Optional[float] = Field(None, description="Minimum rating required (e.g., 4.5). Leave None for no filter.")
+    attraction_types: Optional[List[str]] = Field(None, description="Preferred attraction categories as list (e.g., ['museum', 'park', 'historical']). Leave None for all types.")
+    interests: Optional[List[str]] = Field(None, description="User interests as list (e.g., ['art', 'history', 'nature']). Leave None for no filter.")
+    max_entry_fee: Optional[float] = Field(None, description="Maximum entry fee acceptable (e.g., 50.0). Leave None for no limit.")
+    is_indoor_outdoor: Optional[str] = Field(None, description="Filter for 'indoor' or 'outdoor' activities. Leave None for both.")
+    wheelchair_accessible: Optional[bool] = Field(None, description="Filter for wheelchair accessible locations. Leave None for no filter.")
+    
+    # Other search parameters
     proximity_location: Optional[str] = Field(None, description="A landmark, street, or hotel name to prioritize results near this location.")
     target_date: Optional[str] = Field(None, description="Target visit date (YYYY-MM-DD) to check for opening hours or closed days.")
     max_results: int = Field(15, description="Maximum number of attractions to return (default: 15).")
@@ -60,19 +60,13 @@ class SearchAttractions(BaseModel):
 class AnalyzeAndFilter(BaseModel):
     """Tool for analyzing and ranking attraction search results."""
     analysis_goal: str = Field(..., description="Primary ranking goal: 'most_popular', 'hidden_gems', 'family_friendly', 'closest_to_proximity_location', 'accessibility_prioritized'.")
-    top_n: int = Field(5, description="Number of top attractions to recommend (default: 5).")
-
-class ReflectAndModifySearch(BaseModel):
-    """Tool for strategic reflection and search modification based on feedback."""
-    reasoning: str = Field(..., description="Detailed explanation of why previous search failed or how to adjust based on human feedback.")
-    new_search_parameters: SearchAttractions = Field(..., description="Complete new parameters for the next SearchAttractions call.")
+    top_n: int = Field(10, description="Number of top attractions to recommend (default: 10, adjust based on trip duration).")
 
 class ProvideRecommendation(BaseModel):
     """Tool for providing final attraction recommendations and signaling HIL pause."""
-    top_attraction_ids: List[str] = Field(..., description="List of 3-5 best attraction IDs ranked by the LLM.")
+    top_attraction_ids: List[str] = Field(..., description="List of attraction IDs ranked by the LLM (typically 5-10+).")
     reasoning: str = Field(..., description="Detailed reasoning for why these attractions were selected.")
-    summary: str = Field(..., description="Brief summary comparing options and asking user to choose or provide refinement feedback.")
-    user_input_required: bool = Field(True, description="MUST be True. Signals Orchestrator to pause for human input.")
+    summary: str = Field(..., description="Brief summary comparing options.")
 
 # =============================================================================
 # ENHANCED PURE AGENTIC ATTRACTIONS AGENT
@@ -89,14 +83,12 @@ class AttractionsAgent(BaseAgent):
         self.tool_functions = {
             "SearchAttractions": self._tool_search_attractions,
             "AnalyzeAndFilter": self._tool_analyze_and_filter,
-            "ReflectAndModifySearch": self._tool_reflect_and_modify_search,
             "ProvideRecommendation": self._tool_provide_recommendation
         }
         
         self.tool_schemas = {
             "SearchAttractions": SearchAttractions,
             "AnalyzeAndFilter": AnalyzeAndFilter,
-            "ReflectAndModifySearch": ReflectAndModifySearch,
             "ProvideRecommendation": ProvideRecommendation
         }
         
@@ -170,7 +162,7 @@ class AttractionsAgent(BaseAgent):
         return self._force_completion()
 
     # =========================================================================
-    # TOOL IMPLEMENTATION METHODS (Enhanced)
+    # TOOL IMPLEMENTATION METHODS (Enhanced & Fixed)
     # =========================================================================
 
     def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -184,23 +176,38 @@ class AttractionsAgent(BaseAgent):
     def _tool_search_attractions(self, params: SearchAttractions) -> Dict[str, Any]:
         """
         Tool Implementation: Search for attractions using Google Places API.
-        Passes constraints, proximity, and target date for robust searching.
+        Works with flattened schema (no nested constraints object).
         """
         self.log(f"🔍 Searching attractions in: {params.city}")
         
-        # FIX: Unpack constraints as individual kwargs instead of passing as nested dict
+        # Build constraints dict from flattened fields
+        constraints = {
+            'min_rating': params.min_rating,
+            'attraction_types': params.attraction_types or [],
+            'interests': params.interests or [],
+            'max_entry_fee': params.max_entry_fee,
+            'is_indoor_outdoor': params.is_indoor_outdoor,
+            'wheelchair_accessible': params.wheelchair_accessible
+        }
+        
+        # Remove None values
+        constraints = {k: v for k, v in constraints.items() if v is not None}
+        
+        # Call Google Places API
         attractions = self.places_client.search_attractions(
             city=params.city,
             proximity_location=params.proximity_location, 
             target_date=params.target_date,
             max_results=params.max_results,
-            constraints=params.constraints.model_dump()
+            constraints=constraints
         )
         
+        # Deduplicate and store results
         current_ids = {a['id'] for a in self.attraction_search_results}
         new_attractions = [a for a in attractions if a['id'] not in current_ids]
         self.attraction_search_results.extend(new_attractions)
 
+        # Create sample preview
         sample_preview = []
         for a in (new_attractions[:3] if new_attractions else attractions[:3]):
             photo_ref = None
@@ -253,10 +260,6 @@ class AttractionsAgent(BaseAgent):
             "message": f"Ranked by {params.analysis_goal}. Top {params.top_n} selected.",
             "top_summary": [{"id": a['id'], "name": a['name'], "rating": a['rating'], "address": a.get('formatted_address')} for a in ranked_attractions[:params.top_n]]
         }
-    
-    def _tool_reflect_and_modify_search(self, params: ReflectAndModifySearch) -> Dict[str, Any]:
-        self.log(f"🧠 Reflection: {params.reasoning}")
-        return {"success": True, "message": f"Reflection recorded. Proceed with SearchAttractions using new parameters."}
 
     def _tool_provide_recommendation(self, params: ProvideRecommendation) -> Dict[str, Any]:
         self.log(f"⭐ Recommendation provided for {len(params.top_attraction_ids)} attractions.")
@@ -392,26 +395,60 @@ class AttractionsAgent(BaseAgent):
         }
 
     def _create_gemini_tools(self) -> List[Any]:
-        tool_list = [SearchAttractions, AnalyzeAndFilter, ReflectAndModifySearch, ProvideRecommendation]
+        tool_list = [SearchAttractions, AnalyzeAndFilter, ProvideRecommendation]
         tools = []
         for model in tool_list:
             tools.append(genai_types.Tool(function_declarations=[self._pydantic_to_function_declaration(model)]))
         return tools
 
     def _build_system_instruction(self) -> str:
-        return """You are a highly autonomous Attractions Search Agent.
+        """
+        Simplified system instruction to reduce Gemini confusion.
+        Focuses on clear workflow without complex calculations.
+        """
+        return """You are an Attractions Search Agent. Find diverse attractions for vacation planning.
 
-YOUR EFFICIENT WORKFLOW (HIL):
-1. **Search**: **MUST** call `SearchAttractions` with `constraints` (rating, fee, accessibility) and `proximity_location` (if known). Use `target_date` to check opening hours if relevant.
-2. **Analyze & Rank**: Use `AnalyzeAndFilter` to rank results. Use 'accessibility_prioritized' if the user has mobility concerns.
-3. **HIL PAUSE**: Call `ProvideRecommendation`. Set `user_input_required=True`.
-4. **RESUME**: If feedback is simple ("Need cheaper"), call `SearchAttractions` directly. If complex, call `ReflectAndModifySearch` first.
-5. **FINAL CHOICE**: Confirm with `FINAL_CHOICE` signal.
+TOOLS AVAILABLE:
+- SearchAttractions: Search for attractions in a city
+- AnalyzeAndFilter: Rank attractions by quality/popularity
+- ProvideRecommendation: Return final recommendations
 
-CRITICAL RULES:
-- Use real data from Google Places API.
-- Prioritize accessibility and visual appeal (photos) when selecting top candidates.
-- Do not recommend closed locations if a date is provided."""
-    
+YOUR WORKFLOW:
+
+STEP 1: INITIAL SEARCH
+- Call SearchAttractions with the city (use any filters if user specified them)
+- Note how many results you got
+
+STEP 2: CHECK IF YOU NEED MORE
+- For 5+ day trips: Aim for 10+ attractions (to avoid repetition)
+- For 3-4 day trips: 6-8 attractions is fine
+- If you found enough → Continue to STEP 3
+- If you need more → Call SearchAttractions again with different attraction_types
+
+STEP 3: ANALYZE
+- Call AnalyzeAndFilter to rank all attractions you found
+- Use top_n to match trip needs:
+  * 3-day trip: top_n=6
+  * 5-day trip: top_n=10
+  * 7-day trip: top_n=14
+
+STEP 4: RECOMMEND
+- Call ProvideRecommendation with your filtered list
+- Include ALL attraction IDs from your filtered list
+
+IMPORTANT RULES:
+- Don't search more than 3 times
+- The parameters contain: city, departure_date, return_date, proximity_location
+- Calculate trip days from dates to determine how many attractions needed
+- More days = more attractions to avoid repetition in itinerary
+
+EXAMPLE - 5 DAY TRIP:
+Turn 1: SearchAttractions(city="Madrid") → Found 6 attractions
+Turn 2: SearchAttractions(city="Madrid", attraction_types=["museum", "park"]) → Found 5 more = 11 total
+Turn 3: AnalyzeAndFilter(analysis_goal="most_popular", top_n=10) → Rank top 10
+Turn 4: ProvideRecommendation(top_attraction_ids=[...10 ids...]) → Done!
+
+Remember: Trip duration determines how many attractions you need!"""
+
     def _create_tool_response(self, function_call: Any, result: Dict[str, Any]) -> Any:
         return glm.Part(function_response=glm.FunctionResponse(name=function_call.name, response={'result': result}))
