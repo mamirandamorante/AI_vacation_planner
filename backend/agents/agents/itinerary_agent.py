@@ -143,6 +143,11 @@ You are making INTELLIGENT decisions, not following a script."""
         Execute with TRUE agenticness - LLM makes all decisions
         """
         try:
+            # CRITICAL: Clear old itinerary from previous trip
+            self.current_itinerary = []
+            self.trip_data = None
+            self.log("🔄 Cleared previous itinerary")
+           
             # Handle both dict and Pydantic model inputs
             if hasattr(params, 'model_dump'):
                 params_dict = params.model_dump()

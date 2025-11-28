@@ -162,6 +162,10 @@ class HotelAgent(BaseAgent):
             
             # Initialize conversation history as list of properly formatted messages
             conversation_history = []
+            if not continuation_message:  # Only on NEW searches, not HIL continuation
+                self.hotel_search_results_search_results = [] 
+                self.analysis_results = {}
+                self.log("🔄 Cleared previous search results")
             
             # CRITICAL: Store original search parameters to prevent hallucination during refinement
             if not continuation_message:

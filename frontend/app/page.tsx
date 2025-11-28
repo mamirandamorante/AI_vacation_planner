@@ -1,20 +1,14 @@
 "use client";
 
 /**
- * VACATION PLANNER UI - WITH STEP 3 CLARIFICATION SUPPORT
+ * VACATION PLANNER UI - FINAL VERSION WITH COMPLETE STATE RESET
  * 
- * FEATURES:
- * - Step 3: Intelligent clarification system for incomplete prompts
- * - HIL support for flight/hotel selection
- * - Progressive loading messages
- * - Beautiful itinerary formatting
- * - Authentication disabled for demo mode
+ * CRITICAL FIXES:
+ * 1. Added renderKey state to force complete React re-render
+ * 2. Enhanced logging to track recommendation data flow
+ * 3. Force new array references to trigger React updates
  * 
- * STEP 3 ADDITIONS:
- * - Detects clarification_needed status
- * - Displays clarification questions in a modal
- * - Resubmits with user's clarification answers
- * - Seamless flow: Clarification → HIL → Complete
+ * This prevents old flight/hotel data from persisting when planning a new trip
  */
 
 import { useEffect, useState } from "react";
@@ -47,11 +41,10 @@ type FlightRecommendation = {
   };
 };
 
-// STEP 3: Updated PlanningState to include clarification_needed
 type PlanningState = 
   | { status: 'idle' }
   | { status: 'loading'; currentAgent?: string }
-  | { status: 'clarification_needed'; questions: string[]; reasoning: string; missing_required: string[]; missing_optional: string[] }  // STEP 3: NEW
+  | { status: 'clarification_needed'; questions: string[]; reasoning: string; missing_required: string[]; missing_optional: string[] }
   | { status: 'awaiting_input'; sessionId: string; agent: string; itemType: string; recommendations: any[]; summary: string }
   | { status: 'complete'; result: string }
   | { status: 'error'; message: string };
@@ -62,17 +55,17 @@ export default function Home() {
   const [planningState, setPlanningState] = useState<PlanningState>({ status: 'idle' });
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [refinementFeedback, setRefinementFeedback] = useState("");
-  
-  // STEP 3: New state for clarification
   const [clarificationAnswers, setClarificationAnswers] = useState("");
   const [originalPrompt, setOriginalPrompt] = useState("");
+  
+  // CRITICAL FIX: Add renderKey to force complete re-render
+  const [renderKey, setRenderKey] = useState(0);
 
   // AUTHENTICATION DISABLED - Bypass auth for demo mode
   useEffect(() => {
     setAuthToken('demo@vacation-planner.ai');
   }, []);
 
-  // STEP 3: Updated handleSubmit to support clarification_response
   const handleSubmit = async (e: React.FormEvent, clarificationResponse?: string) => {
     e.preventDefault();
 
@@ -81,27 +74,29 @@ export default function Home() {
       return;
     }
 
-    // Store original prompt for clarification resubmission
     if (!clarificationResponse) {
       setOriginalPrompt(prompt);
     }
 
-    // Start with FlightAgent (or clarification if needed)
     setPlanningState({ status: 'loading', currentAgent: 'FlightAgent' });
 
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
       
-      // STEP 3: Build request body with optional clarification_response
       const requestBody: any = { prompt };
       if (clarificationResponse) {
         requestBody.clarification_response = clarificationResponse;
       }
       
+      console.log('🚀 Sending request to backend:', requestBody);
+      
       const response = await fetch(`${backendUrl}/api/plan-vacation-agents`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
           Authorization: authToken ? `Bearer ${authToken}` : "",
         },
         body: JSON.stringify(requestBody),
@@ -120,11 +115,16 @@ export default function Home() {
     }
   };
 
-  // STEP 3: Updated to handle clarification_needed
   const handlePlanningResponse = (data: any) => {
     console.log('🔍 Processing response with status:', data.status);
+    console.log('📊 Recommendations count:', data.recommendations?.length || 0);
+    console.log('🔍 FULL DATA OBJECT:', JSON.stringify(data, null, 2));
     
-    // STEP 3: Handle clarification needed FIRST (before other checks)
+    if (data.recommendations?.[0]) {
+      console.log('✈️ First recommendation route:', data.recommendations[0].outbound?.from, '→', data.recommendations[0].outbound?.to);
+      console.log('✈️ FIRST RECOMMENDATION FULL:', JSON.stringify(data.recommendations[0], null, 2));
+    }
+    
     if (data.status === 'clarification_needed') {
       console.log('❓ Clarification needed:', data.questions?.length, 'questions');
       setPlanningState({
@@ -137,7 +137,6 @@ export default function Home() {
       return;
     }
     
-    // Handle error responses
     if (data.status === 'error' || (data.success === false && data.status !== 'awaiting_user_input')) {
       setPlanningState({
         status: 'error',
@@ -146,21 +145,34 @@ export default function Home() {
       return;
     }
 
-    // Handle HIL pause
+    // CRITICAL: Create new array to force React update
     if (data.status === 'awaiting_user_input') {
       console.log('⏸️ HIL pause detected for:', data.agent);
-      setPlanningState({
-        status: 'awaiting_input',
+      
+      const newRecommendations = [...(data.recommendations || [])];
+      console.log('🔄 Setting new recommendations array with', newRecommendations.length, 'items');
+      console.log('🔄 NEW RECOMMENDATIONS ARRAY:', JSON.stringify(newRecommendations, null, 2));
+      
+      const newState = {
+        status: 'awaiting_input' as const,
         sessionId: data.session_id,
         agent: data.agent,
         itemType: data.item_type,
-        recommendations: data.recommendations || [],
+        recommendations: newRecommendations,
         summary: data.summary || ""
-      });
+      };
+      
+      console.log('🔄 SETTING PLANNING STATE TO:', JSON.stringify(newState, null, 2));
+      setPlanningState(newState);
+      
+      // Verify it was set correctly
+      setTimeout(() => {
+        console.log('✅ VERIFY - planningState after setState:', planningState);
+      }, 100);
+      
       return;
     }
 
-    // Handle completion
     if (data.status === 'complete' && data.success) {
       console.log('✅ Plan complete!');
       setPlanningState({
@@ -170,7 +182,6 @@ export default function Home() {
       return;
     }
 
-    // Unexpected response
     console.warn('⚠️ Unexpected response:', data);
     setPlanningState({
       status: 'error',
@@ -178,7 +189,6 @@ export default function Home() {
     });
   };
 
-  // STEP 3: New function to handle clarification submission
   const handleSubmitClarification = async () => {
     if (!clarificationAnswers.trim()) {
       alert('Please provide your answers before continuing');
@@ -186,11 +196,8 @@ export default function Home() {
     }
 
     console.log('💬 Submitting clarification:', clarificationAnswers);
-    
-    // Clear clarification UI and show loading
     setPlanningState({ status: 'loading', currentAgent: 'FlightAgent' });
     
-    // Resubmit with original prompt + clarification
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
       
@@ -198,6 +205,9 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
           Authorization: authToken ? `Bearer ${authToken}` : "",
         },
         body: JSON.stringify({
@@ -208,10 +218,7 @@ export default function Home() {
 
       const data = await response.json();
       console.log('📦 Clarification response:', data);
-      
-      // Clear clarification answers
       setClarificationAnswers("");
-      
       handlePlanningResponse(data);
 
     } catch (error) {
@@ -223,12 +230,7 @@ export default function Home() {
     }
   };
 
-  /**
-   * NEW: Simulate Phase 2 progress (Restaurant → Attractions → Itinerary)
-   * This cycles through loading messages while backend processes Phase 2
-   */
   const simulatePhase2Progress = () => {
-    // After 3 seconds, show AttractionsAgent message
     setTimeout(() => {
       setPlanningState(prev => {
         if (prev.status === 'loading') {
@@ -238,7 +240,6 @@ export default function Home() {
       });
     }, 3000);
 
-    // After 6 seconds, show ItineraryAgent message
     setTimeout(() => {
       setPlanningState(prev => {
         if (prev.status === 'loading') {
@@ -254,14 +255,12 @@ export default function Home() {
 
     console.log('✅ User selected:', selectedId);
     
-    // Determine next agent based on current agent
     const currentAgent = planningState.agent;
-    let nextAgent = 'ItineraryAgent'; // default
+    let nextAgent = 'ItineraryAgent';
     
     if (currentAgent === 'FlightAgent') {
       nextAgent = 'HotelAgent';
     } else if (currentAgent === 'HotelAgent') {
-      // After hotel selection, Phase 2 begins (Restaurant, Attractions, Itinerary)
       nextAgent = 'RestaurantAgent';
     } else if (currentAgent === 'RestaurantAgent') {
       nextAgent = 'AttractionsAgent';
@@ -271,7 +270,6 @@ export default function Home() {
     
     setPlanningState({ status: 'loading', currentAgent: nextAgent });
 
-    // NEW: If we're past HotelAgent, simulate progressive Phase 2 loading
     const isPhase2 = currentAgent === 'HotelAgent';
     if (isPhase2) {
       simulatePhase2Progress();
@@ -313,7 +311,6 @@ export default function Home() {
 
     console.log('🔄 Refining with feedback:', refinementFeedback);
     
-    // Stay with same agent during refinement
     const currentAgent = planningState.agent;
     setPlanningState({ status: 'loading', currentAgent: currentAgent });
 
@@ -349,9 +346,6 @@ export default function Home() {
     }
   };
 
-  /**
-   * Get intelligent loading message based on current agent
-   */
   const getLoadingMessage = () => {
     if (planningState.status !== 'loading') return "Planning your vacation...";
     
@@ -371,26 +365,20 @@ export default function Home() {
     }
   };
 
-  /**
-   * Convert markdown-style text to rich HTML
-   */
   const formatItineraryText = (text: string) => {
     if (!text) return '';
     
-    // Split into lines
     const lines = text.split('\n');
     const html: string[] = [];
     
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i];
       
-      // Skip empty lines
       if (!line.trim()) {
         html.push('<br />');
         continue;
       }
       
-      // Headers
       if (line.startsWith('### ')) {
         line = line.replace(/### (.+)/, '<h3 class="text-xl font-bold text-[#2d2a26] mt-6 mb-3">$1</h3>');
         html.push(line);
@@ -400,44 +388,51 @@ export default function Home() {
       } else if (line.startsWith('# ')) {
         line = line.replace(/# (.+)/, '<h1 class="text-3xl font-bold text-[#2d2a26] mb-4">$1</h1>');
         html.push(line);
-      }
-      // Horizontal rule
-      else if (line.trim() === '---') {
+      } else if (line.trim() === '---') {
         html.push('<hr class="my-6 border-[#e8e4df]" />');
-      }
-      // Bullet points
-      else if (line.trim().startsWith('•')) {
+      } else if (line.trim().startsWith('•')) {
         line = line.replace(/• (.+)/, '<div class="ml-4 mb-2 flex items-start"><span class="text-[#c17d3f] mr-2">•</span><span class="text-[#2d2a26]">$1</span></div>');
         html.push(line);
-      }
-      // Regular paragraphs
-      else {
+      } else {
         html.push(`<p class="text-[#2d2a26] mb-2">${line}</p>`);
       }
     }
     
     let result = html.join('');
-    
-    // Format bold and italic (***text*** → bold + italic)
     result = result.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em class="text-[#c17d3f]">$1</em></strong>');
-    
-    // Format bold (**text**)
     result = result.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold">$1</strong>');
     
     return result;
   };
 
+  /**
+   * CRITICAL FIX: Reset ALL state AND increment renderKey
+   */
   const resetPlanner = () => {
+    const timestamp = Date.now();
+    console.log(`🔄 [${timestamp}] Full state reset - incrementing renderKey from`, renderKey, 'to', renderKey + 1);
+    
+    // Reset all state
     setPlanningState({ status: 'idle' });
     setPrompt("");
     setRefinementFeedback("");
     setClarificationAnswers("");
     setOriginalPrompt("");
+    
+    // CRITICAL: Increment renderKey to force complete re-render
+    setRenderKey(prev => prev + 1);
+    
+    // Force garbage collection by clearing any cached data
+    if (typeof window !== 'undefined') {
+      sessionStorage.clear();
+      console.log(`✅ [${timestamp}] Session storage cleared`);
+    }
+    
+    console.log(`✅ [${timestamp}] State reset complete - ready for new trip`);
   };
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-[#f5f3f0] via-[#faf8f5] to-[#f0ede8]">
-      {/* Header */}
+    <main key={renderKey} className="min-h-screen bg-gradient-to-br from-[#f5f3f0] via-[#faf8f5] to-[#f0ede8]">
       <div className="container mx-auto px-4 py-8">
         <div className="flex flex-col items-center justify-center text-center mb-12">
           <h1 className="text-4xl font-bold text-[#2d2a26] mb-2">
@@ -446,70 +441,57 @@ export default function Home() {
           <p className="text-[#6b6560] text-lg">Plan your perfect getaway with AI-powered recommendations</p>
         </div>
 
-        {/* STEP 3: Clarification Modal */}
+        {/* Clarification Modal */}
         {planningState.status === 'clarification_needed' && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-              <div className="p-8">
-                <div className="text-center mb-6">
-                  <span className="text-6xl mb-4 block">🤔</span>
-                  <h2 className="text-3xl font-bold text-[#2d2a26] mb-2">
-                    We need a bit more information
-                  </h2>
-                  <p className="text-[#6b6560] text-lg">
-                    To plan the perfect vacation, please answer these questions:
-                  </p>
-                </div>
+            <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full p-8">
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold text-[#2d2a26] mb-2">
+                  ❓ Just a Few More Details
+                </h2>
+                <p className="text-[#6b6560]">
+                  {planningState.reasoning}
+                </p>
+              </div>
 
-                {/* Display reasoning if provided */}
-                {planningState.reasoning && (
-                  <div className="bg-[#faf8f5] border-l-4 border-[#c17d3f] p-4 mb-6 rounded-lg">
-                    <p className="text-[#2d2a26] text-sm">
-                      <strong>Why we're asking:</strong> {planningState.reasoning}
-                    </p>
-                  </div>
-                )}
-
-                {/* Questions List */}
-                <div className="mb-6 space-y-4">
-                  {planningState.questions.map((question, index) => (
-                    <div key={index} className="bg-[#fdfcfb] border-2 border-[#e8e4df] rounded-xl p-4">
-                      <p className="text-[#2d2a26]">
-                        <strong className="text-[#c17d3f]">Q{index + 1}:</strong> {question}
-                      </p>
-                    </div>
+              <div className="bg-[#faf8f5] rounded-xl p-6 mb-6">
+                <h3 className="font-semibold text-[#2d2a26] mb-3">Please provide:</h3>
+                <ul className="space-y-2">
+                  {planningState.questions.map((question, idx) => (
+                    <li key={idx} className="flex items-start gap-2 text-[#2d2a26]">
+                      <span className="text-[#c17d3f] font-bold">{idx + 1}.</span>
+                      <span>{question}</span>
+                    </li>
                   ))}
-                </div>
+                </ul>
+              </div>
 
-                {/* Answer Input */}
-                <div className="mb-6">
-                  <label className="block text-sm font-semibold text-[#2d2a26] mb-2">
-                    Your answers:
-                  </label>
-                  <textarea
-                    value={clarificationAnswers}
-                    onChange={(e) => setClarificationAnswers(e.target.value)}
-                    placeholder="Please provide your answers here...&#10;&#10;Example: 'From Santander, December 10-16, 2025, no dietary restrictions'"
-                    className="w-full px-4 py-3 border-2 border-[#e8e4df] rounded-xl focus:outline-none focus:border-[#c4bdb5] text-[#2d2a26] placeholder-[#b0aaa4] min-h-[120px] resize-none bg-white"
-                  />
-                </div>
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-[#2d2a26] mb-2">
+                  Your Answers:
+                </label>
+                <textarea
+                  value={clarificationAnswers}
+                  onChange={(e) => setClarificationAnswers(e.target.value)}
+                  placeholder="Please provide your answers here...&#10;&#10;Example: 'From Santander, December 10-16, 2025, no dietary restrictions'"
+                  className="w-full px-4 py-3 border-2 border-[#e8e4df] rounded-xl focus:outline-none focus:border-[#c4bdb5] text-[#2d2a26] placeholder-[#b0aaa4] min-h-[120px] resize-none bg-white"
+                />
+              </div>
 
-                {/* Action Buttons */}
-                <div className="flex gap-3">
-                  <button
-                    onClick={resetPlanner}
-                    className="flex-1 px-6 py-3 border-2 border-[#e8e4df] text-[#2d2a26] rounded-xl hover:bg-[#faf8f5] transition-all duration-200 font-medium"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleSubmitClarification}
-                    disabled={!clarificationAnswers.trim()}
-                    className="flex-1 px-6 py-3 bg-gradient-to-r from-[#c17d3f] to-[#a86b32] text-white rounded-xl hover:from-[#d18d4f] hover:to-[#b87b42] disabled:from-[#d4cfc8] disabled:to-[#d4cfc8] disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-md"
-                  >
-                    Continue Planning →
-                  </button>
-                </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={resetPlanner}
+                  className="flex-1 px-6 py-3 border-2 border-[#e8e4df] text-[#2d2a26] rounded-xl hover:bg-[#faf8f5] transition-all duration-200 font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSubmitClarification}
+                  disabled={!clarificationAnswers.trim()}
+                  className="flex-1 px-6 py-3 bg-gradient-to-r from-[#c17d3f] to-[#a86b32] text-white rounded-xl hover:from-[#d18d4f] hover:to-[#b87b42] disabled:from-[#d4cfc8] disabled:to-[#d4cfc8] disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-md"
+                >
+                  Continue Planning →
+                </button>
               </div>
             </div>
           </div>
@@ -536,7 +518,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Intelligent Loading State with Agent-Specific Messages */}
+        {/* Loading State */}
         {planningState.status === 'loading' && (
           <div className="max-w-3xl mx-auto mb-8">
             <div className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-12">
@@ -561,115 +543,79 @@ export default function Home() {
                   <p className="text-2xl font-semibold text-[#2d2a26] mb-2">
                     {getLoadingMessage()}
                   </p>
-                  <p className="text-sm text-[#6b6560]">
-                    This may take a few moments as our AI agents work their magic...
-                  </p>
+                  <p className="text-[#6b6560]">This may take a moment...</p>
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* HIL Selection Interface */}
+        {/* HIL Selection UI - CRITICAL: Use unique keys */}
         {planningState.status === 'awaiting_input' && (
-          <div className="max-w-5xl mx-auto mb-8">
+          <div key={`hil-${renderKey}`} className="max-w-4xl mx-auto mb-8">
             <div className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-8">
-              <h2 className="text-3xl font-bold text-[#2d2a26] mb-3">
-                {planningState.itemType === 'flight' && '✈️ Choose Your Flight'}
-                {planningState.itemType === 'hotel' && '🏨 Select Your Hotel'}
-                {planningState.itemType === 'restaurant' && '🍽️ Pick Your Restaurants'}
-                {planningState.itemType === 'attraction' && '🎭 Choose Your Activities'}
+              {/* DEBUG INFO */}
+              <div style={{display: 'none'}}>
+                {console.log('🎨 RENDERING HIL UI with', planningState.recommendations.length, 'recommendations')}
+                {planningState.recommendations.map((rec, i) => 
+                  console.log(`🎨 Rec ${i}:`, rec.outbound?.from, '→', rec.outbound?.to, '$'+rec.price)
+                )}
+              </div>
+              
+              <h2 className="text-2xl font-bold text-[#2d2a26] mb-2">
+                {planningState.itemType === 'flight' ? '✈️ Select Your Flight' : '🏨 Choose Your Hotel'}
               </h2>
-              <p className="text-[#6b6560] mb-8 text-lg">{planningState.summary}</p>
-
-              {/* Recommendations Grid */}
-              <div className="grid gap-5 mb-8">
-                {planningState.recommendations.map((item: any) => (
-                  <div
-                    key={item.id}
-                    className="border-2 border-[#e8e4df] rounded-2xl p-6 hover:border-[#c4bdb5] hover:shadow-xl transition-all duration-300 cursor-pointer bg-[#fdfcfb]"
-                    onClick={() => handleSelectRecommendation(item.id)}
+              <p className="text-[#6b6560] mb-6">{planningState.summary}</p>
+              
+              <div className="space-y-4 mb-6">
+                {planningState.recommendations.map((rec: any, idx: number) => (
+                  <div 
+                    key={`${rec.id}-${renderKey}-${idx}`}
+                    onClick={() => handleSelectRecommendation(rec.id)}
+                    className="border-2 border-[#e8e4df] rounded-xl p-5 hover:border-[#c17d3f] hover:shadow-md transition-all duration-200 cursor-pointer bg-[#fdfcfb]"
                   >
-                    {/* Flight Card */}
-                    {planningState.itemType === 'flight' && (
+                    {planningState.itemType === 'flight' ? (
                       <div>
-                        <div className="flex justify-between items-start mb-4">
+                        <div className="flex justify-between items-start mb-3">
                           <div>
-                            <p className="font-bold text-xl text-[#2d2a26]">
-                              {item.outbound.airline} {item.outbound.flight}
-                            </p>
-                            <p className="text-[#6b6560] mt-1">
-                              {item.outbound.from} → {item.outbound.to}
-                            </p>
+                            <p className="font-semibold text-lg text-[#2d2a26]">{rec.outbound.from} → {rec.outbound.to}</p>
+                            <p className="text-sm text-[#6b6560]">{rec.outbound.airline} • {rec.outbound.stops === 0 ? 'Direct' : `${rec.outbound.stops} stop(s)`}</p>
                           </div>
-                          <div className="text-right">
-                            <p className="text-2xl font-bold text-[#c17d3f]">
-                              ${item.price}
-                            </p>
-                            <p className="text-xs text-[#8b857f]">{item.currency}</p>
-                          </div>
+                          <p className="text-2xl font-bold text-[#c17d3f]">${rec.price}</p>
                         </div>
-                        <div className="text-sm text-[#6b6560] space-y-1">
-                          <p>✈️ Departure: {new Date(item.outbound.departure).toLocaleString()}</p>
-                          <p>⏱️ Duration: {item.outbound.duration} | Stops: {item.outbound.stops}</p>
+                        <div className="text-sm text-[#6b6560]">
+                          <p>Departure: {new Date(rec.outbound.departure).toLocaleString()}</p>
+                          <p>Duration: {rec.outbound.duration}</p>
                         </div>
-                        {item.return && (
-                          <div className="mt-3 pt-3 border-t border-[#e8e4df] text-sm text-[#6b6560]">
-                            <p>🔄 Return: {new Date(item.return.departure).toLocaleString()}</p>
-                          </div>
-                        )}
                       </div>
-                    )}
-
-                    {/* Hotel Card */}
-                    {planningState.itemType === 'hotel' && (
+                    ) : (
                       <div>
                         <div className="flex justify-between items-start mb-2">
-                          <div className="flex-1">
-                            <p className="font-bold text-xl text-[#2d2a26]">{item.name}</p>
-                            <p className="text-[#6b6560] text-sm mt-1">
-                              {'⭐'.repeat(Math.round(item.rating || 3))} {item.rating}
-                            </p>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-2xl font-bold text-[#c17d3f]">
-                              ${item.price}
-                            </p>
-                            <p className="text-xs text-[#8b857f]">/night</p>
-                          </div>
+                          <h3 className="font-semibold text-lg text-[#2d2a26]">{rec.name}</h3>
+                          <p className="text-xl font-bold text-[#c17d3f]">${rec.price}/night</p>
                         </div>
-                        <p className="text-sm text-[#6b6560] mt-2">{item.room_type}</p>
-                      </div>
-                    )}
-
-                    {/* Generic Card for other types */}
-                    {planningState.itemType !== 'flight' && planningState.itemType !== 'hotel' && (
-                      <div>
-                        <p className="font-bold text-xl text-[#2d2a26]">{item.name || item.id}</p>
-                        <p className="text-sm text-[#6b6560] mt-2">{JSON.stringify(item)}</p>
+                        <p className="text-sm text-[#6b6560] mb-2">Rating: {'⭐'.repeat(Math.round(rec.rating || 3))}</p>
+                        <p className="text-sm text-[#2d2a26]">{rec.room_type}</p>
                       </div>
                     )}
                   </div>
                 ))}
               </div>
 
-              {/* Refinement Section */}
               <div className="border-t border-[#e8e4df] pt-6">
-                <p className="text-sm font-semibold text-[#2d2a26] mb-3">
-                  Want something different?
-                </p>
+                <p className="text-sm text-[#6b6560] mb-3">Not satisfied? Provide feedback to refine the search:</p>
                 <div className="flex gap-3">
                   <input
                     type="text"
                     value={refinementFeedback}
                     onChange={(e) => setRefinementFeedback(e.target.value)}
-                    placeholder="e.g., 'Show me cheaper options' or 'I prefer morning flights'"
-                    className="flex-1 px-4 py-3 border-2 border-[#e8e4df] rounded-xl focus:outline-none focus:border-[#c4bdb5] bg-white text-[#2d2a26] placeholder-[#b0aaa4]"
+                    placeholder="E.g., 'Too expensive' or 'I want direct flights'"
+                    className="flex-1 px-4 py-2 border-2 border-[#e8e4df] rounded-xl focus:outline-none focus:border-[#c4bdb5] text-[#2d2a26]"
                   />
                   <button
                     onClick={handleRefine}
                     disabled={!refinementFeedback.trim()}
-                    className="px-6 py-3 bg-[#2d2a26] text-white rounded-xl hover:bg-[#3d3a36] disabled:bg-[#d4cfc8] disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-md"
+                    className="px-6 py-2 bg-[#c17d3f] text-white rounded-xl hover:bg-[#a86b32] disabled:bg-[#d4cfc8] disabled:cursor-not-allowed transition-all duration-200 font-medium"
                   >
                     Refine
                   </button>
@@ -679,12 +625,12 @@ export default function Home() {
           </div>
         )}
 
-        {/* Main Planning Interface */}
+        {/* Input Form */}
         <div className="max-w-3xl mx-auto">
           {planningState.status === 'idle' && (
-            <form onSubmit={(e) => handleSubmit(e)} className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-8">
-              <label className="block text-lg font-semibold text-[#2d2a26] mb-4">
-                Where would you like to go? ✈️
+            <form onSubmit={handleSubmit} className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-8">
+              <label className="block text-sm font-medium text-[#2d2a26] mb-3">
+                Describe Your Dream Vacation ✈️
               </label>
               <textarea
                 value={prompt}
@@ -704,17 +650,15 @@ export default function Home() {
           )}
         </div>
 
-        {/* Results Display - Rich HTML formatting with button at the end */}
+        {/* Results Display */}
         {planningState.status === 'complete' && (
           <div className="max-w-5xl mx-auto">
             <div className="bg-white rounded-3xl shadow-lg border border-[#e8e4df] p-10">
-              {/* Rich HTML formatting of itinerary */}
               <div 
                 className="prose prose-lg max-w-none mb-8"
                 dangerouslySetInnerHTML={{ __html: formatItineraryText(planningState.result) }}
               />
               
-              {/* Button at the END with matching style */}
               <div className="flex justify-center pt-6 border-t border-[#e8e4df]">
                 <button
                   onClick={resetPlanner}

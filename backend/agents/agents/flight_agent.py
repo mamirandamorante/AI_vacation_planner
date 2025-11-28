@@ -105,6 +105,11 @@ class FlightAgent(BaseAgent):
     def execute(self, params: Dict[str, Any], continuation_message: Optional[Dict[str, Any]] = None, max_turns: int = 5) -> Dict[str, Any]:
         try:
             # Check for FINAL_CHOICE_TRIGGER in continuation message
+            if not continuation_message:
+                self.flight_search_results = []
+                self.analysis_results = {}
+                self.log("🔄 Cleared previous search results for new trip")
+            
             if continuation_message:
                 content = continuation_message.get('content', '')
                 

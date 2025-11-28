@@ -109,7 +109,11 @@ class AttractionsAgent(BaseAgent):
 
     def execute(self, params: Dict[str, Any], continuation_message: Optional[Dict[str, Any]] = None, max_turns: int = 5) -> Dict[str, Any]:
         chat = self.model.start_chat()
-        
+        if not continuation_message:  # Only on NEW searches, not HIL continuation
+            self.attraction_search_results = [] 
+            self.analysis_results = {}
+            self.log("🔄 Cleared previous search results")
+
         if continuation_message:
             prompt = f"The user has reviewed the recommendations and provided feedback: {json.dumps(continuation_message)}. Use your tools to refine results or confirm the final choice."
             self.log(f"🔄 Resuming search based on human feedback: {continuation_message.get('feedback', 'New constraints/choice')}")
