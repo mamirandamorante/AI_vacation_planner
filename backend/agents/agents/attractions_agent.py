@@ -328,11 +328,16 @@ class AttractionsAgent(BaseAgent):
         return dict(proto_map)
 
     def _sanitize_property_schema(self, prop_schema: Dict[str, Any], defs: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Sanitize Pydantic schema for Gemini compatibility.
+        Handles anyOf, allOf, and removes unsupported fields.
+        """
         if defs is None:
             defs = {}
         
         sanitized = prop_schema.copy()
         
+        # Handle "anyOf" - typically from Optional fields
         if 'anyOf' in sanitized:
             for item in sanitized['anyOf']:
                 if 'type' in item and item['type'] != 'null':
@@ -340,13 +345,30 @@ class AttractionsAgent(BaseAgent):
                     break
             del sanitized['anyOf']
         
+        # Handle "allOf" - typically from Pydantic model composition/inheritance
+        if 'allOf' in sanitized:
+            # Merge all schemas in allOf
+            merged = {}
+            for item in sanitized['allOf']:
+                if '$ref' in item:
+                    ref_name = item['$ref'].split('/')[-1]
+                    if ref_name in defs:
+                        merged.update(defs[ref_name])
+                else:
+                    merged.update(item)
+            sanitized.update(merged)
+            del sanitized['allOf']
+        
+        # Remove unsupported fields
         for field in ['default', 'title', '$defs', 'examples']:
             if field in sanitized:
                 del sanitized[field]
         
+        # Convert types to uppercase for Gemini
         if 'type' in sanitized and isinstance(sanitized['type'], str):
             sanitized['type'] = sanitized['type'].upper()
         
+        # Recursively sanitize nested structures
         if sanitized.get('type') == 'ARRAY' and 'items' in sanitized:
             sanitized['items'] = self._sanitize_property_schema(sanitized['items'], defs)
         

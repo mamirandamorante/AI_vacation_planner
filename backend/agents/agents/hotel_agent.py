@@ -65,9 +65,19 @@ class AnalyzeAndFilter(BaseModel):
     pass  # No parameters needed - agent will use default ranking
 
 class ReflectAndModifySearch(BaseModel):
-    """Tool for strategic reflection and search modification."""
+    """
+    Tool for strategic reflection and search modification.
+    
+    Use this when a search fails or needs adjustment. Provide your reasoning
+    and the NEW search parameters to try next.
+    """
     reasoning: str = Field(..., description="Detailed explanation of why previous search failed or how to adjust based on feedback.")
-    new_search_parameters: SearchHotels = Field(..., description="Complete new parameters for the next SearchHotels call.")
+    # Flattened SearchHotels parameters (instead of nested object)
+    city_code: str = Field(..., description="NEW city code or name for hotel search (e.g., 'AMS' for Amsterdam, 'PAR' for Paris).")
+    check_in_date: str = Field(..., description="NEW check-in date in YYYY-MM-DD format.")
+    check_out_date: str = Field(..., description="NEW check-out date in YYYY-MM-DD format.")
+    adults: int = Field(2, description="NEW number of adults (default: 2).")
+    max_results: int = Field(20, description="NEW maximum number of hotel results to return (default: 20).")
 
 class ProvideRecommendation(BaseModel):
     """Tool for providing final hotel recommendations and signaling HIL pause."""
